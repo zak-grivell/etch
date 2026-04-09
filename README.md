@@ -30,3 +30,8 @@ module XOR {
 
 
 I want to investigate pipes for when small values tho
+
+CURRENT PLAN:
+- Parser: Code -> AST
+- Compiler: AST -> Node Structure
+- Simulator: Simulates Node Structures

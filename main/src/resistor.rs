@@ -1,7 +1,4 @@
-use crate::{
-    component::{Component, SimResult},
-    net::Node,
-};
+use crate::{component::Component, net::Node};
 use uuid::Uuid;
 
 pub struct Resistor {
@@ -23,28 +20,18 @@ impl Resistor {
 }
 
 impl Component for Resistor {
-    fn predict_voltage(&self, net: &Node) -> SimResult {
-        if net == &self.a {
-            SimResult::Predict(self.b.voltage() + self.current() * self.resistance)
-        } else if net == &self.b {
-            SimResult::Predict(self.a.voltage() - self.current() * self.resistance)
-        } else {
-            SimResult::None
-        }
-    }
+    fn step(&mut self) {
+        let v_a = self.a.voltage();
+        let v_b = self.b.voltage();
 
-    fn predict_current(&self, net: &Node) -> SimResult {
-        if net == &self.a {
-            SimResult::Predict((self.a.voltage() - self.b.voltage()) / self.resistance)
-        } else if net == &self.b {
-            SimResult::Predict((self.b.voltage() - self.a.voltage()) / self.resistance)
-        } else {
-            SimResult::None
-        }
+        let g = 1.0 / self.resistance;
+
+        self.a.push(v_b * g, g);
+        self.b.push(v_a * g, g);
     }
 
     fn current(&self) -> f64 {
-        return (self.a.current_to(&self.id).abs() + self.b.current_to(&self.id).abs()) / 2.0;
+        (self.a.voltage() - self.b.voltage()) / self.resistance
     }
 
     fn voltage(&self) -> f64 {

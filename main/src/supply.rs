@@ -1,4 +1,4 @@
-use crate::{component::SimResult, net::Node};
+use crate::net::Node;
 use uuid::Uuid;
 
 use crate::component::Component;
@@ -7,6 +7,7 @@ pub struct VoltageSource {
     voltage: f64,
     out: Node,
     gnd: Node,
+
     id: Uuid,
 }
 
@@ -22,24 +23,30 @@ impl VoltageSource {
 }
 
 impl Component for VoltageSource {
-    fn predict_voltage(&self, net: &Node) -> SimResult {
-        if *net == self.out {
-            SimResult::Exact(self.voltage)
-        } else {
-            SimResult::Exact(0.0)
-        }
-    }
+    fn step(&mut self) {
+        let v_out = self.out.voltage();
+        let v_gnd = self.gnd.voltage();
 
-    fn predict_current(&self, _net: &Node) -> SimResult {
-        SimResult::None
+        // Model as a low-resistance source with high conductance
+        let g = 10000.0;
+
+        // self.out.set_fixed(self.voltage);
+
+        // V_out should be V_gnd + voltage
+        self.out.push((v_gnd + self.voltage) * g, g);
+        // V_gnd should be V_out - voltage
+        self.gnd.push((v_out - self.voltage) * g, g);
     }
 
     fn current(&self) -> f64 {
-        return (self.out.current_to(&self.id).abs() + self.gnd.current_to(&self.id).abs()) / 2.0;
+        let v_out = self.out.voltage();
+        let v_gnd = self.gnd.voltage();
+        let g = 100.0;
+        (v_gnd + self.voltage - v_out) * g
     }
 
     fn voltage(&self) -> f64 {
-        return self.out.voltage() - self.gnd.voltage();
+        self.out.voltage() - self.gnd.voltage()
     }
 
     fn connections(&self) -> Vec<Node> {

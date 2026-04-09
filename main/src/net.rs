@@ -1,6 +1,10 @@
-use crate::component::{Edge, SimResult};
+use crate::component::Edge;
 use core::fmt;
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{
+    cell::{Ref, RefCell, RefMut},
+    hash::Hash,
+    rc::Rc,
+};
 use uuid::Uuid;
 
 struct Net {
@@ -8,7 +12,10 @@ struct Net {
 
     voltage: f64,
     connections: Vec<Edge>,
-    current: HashMap<Uuid, f64>,
+
+    acc_current: f64,
+    acc_conductance: f64,
+    is_fixed: bool,
 }
 
 #[derive(Clone)]
@@ -19,127 +26,56 @@ impl Node {
         Node(Rc::new(RefCell::new(Net {
             voltage: 0.0,
             id: Uuid::new_v4(),
-            current: HashMap::new(),
             connections: Vec::new(),
+            acc_current: 0.0,
+            acc_conductance: 0.0,
+            is_fixed: false,
         })))
     }
 
-    pub fn connections(&self) -> Vec<Edge> {
-        self.0.borrow().connections.clone()
+    fn borrow(&self) -> Ref<'_, Net> {
+        self.0.borrow()
+    }
+
+    fn borrow_mut(&self) -> RefMut<'_, Net> {
+        self.0.borrow_mut()
     }
 
     pub fn connect(&self, component: &Edge) {
-        self.0.borrow_mut().connections.push(component.clone());
-        self.0.borrow_mut().current.insert(component.id(), 0.0);
+        self.borrow_mut().connections.push(component.clone());
     }
 
     pub fn voltage(&self) -> f64 {
-        self.0.borrow().voltage
+        self.borrow().voltage
     }
 
-    pub fn current_to(&self, id: &Uuid) -> f64 {
-        *self.0.borrow().current.get(id).unwrap()
+    pub fn set_fixed(&self, voltage: f64) {
+        let mut n = self.borrow_mut();
+        n.voltage = voltage;
+        n.is_fixed = true;
     }
 
-    pub fn predict_voltage(&self) {
-        let sim_results = self
-            .connections()
-            .iter()
-            .map(|v| v.predict_voltage(self))
-            .collect::<Vec<_>>();
-
-        let exacts = sim_results
-            .iter()
-            .filter_map(|r| match r {
-                SimResult::Exact(f) => Some(*f),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-
-        if exacts.len() == 0 {
-            let predicts = sim_results
-                .iter()
-                .filter_map(|r| match r {
-                    SimResult::Predict(f) => Some(*f),
-                    _ => None,
-                })
-                .fold((0.0, 0), |(sum, count), v| (sum + v, count + 1));
-
-            self.0.borrow_mut().voltage = predicts.0 / predicts.1 as f64;
-        } else if exacts.len() == 1 {
-            self.0.borrow_mut().voltage = exacts[0];
-        } else {
-            if (exacts.iter().sum::<f64>() / exacts.len() as f64 - exacts[0]).abs() > 1e-6 {
-                panic!(
-                    "Conflicting voltage predictions for node {}: {:?}",
-                    self.0.borrow().id,
-                    exacts
-                );
-            }
-
-            return;
-        }
+    pub fn push(&self, current: f64, conductance: f64) {
+        let mut n = self.borrow_mut();
+        n.acc_current += current;
+        n.acc_conductance += conductance;
     }
 
-    pub fn predict_currents(&self) {
-        let s = self
-            .0
-            .borrow()
-            .connections
-            .iter()
-            .map(|component| {
-                (
-                    component.id(),
-                    match component.predict_current(self) {
-                        SimResult::Exact(f) => SimResult::Exact(f),
-                        SimResult::Predict(f) => SimResult::Predict(f),
-                        SimResult::None => SimResult::Predict(
-                            *self.0.borrow().current.get(&component.id()).unwrap_or(&0.0),
-                        ),
-                    },
-                )
-            })
-            .collect::<HashMap<_, _>>();
+    pub fn clear(&self) {
+        let mut n = self.borrow_mut();
+        n.acc_current = 0.0;
+        n.acc_conductance = 0.0;
+    }
 
-        let total = s
-            .values()
-            .filter_map(|x| match x {
-                SimResult::Predict(f) => Some(*f),
-                SimResult::Exact(f) => Some(*f),
-                _ => None,
-            })
-            .sum::<f64>();
-
-        let adjustable = s
-            .values()
-            .filter_map(|x| match x {
-                SimResult::Predict(_) => Some(()),
-                SimResult::None => Some(()),
-                _ => None,
-            })
-            .count();
-
-        if adjustable == 0 {
-            if total.abs() > 1e-6 {
-                panic!(
-                    "No adjustable currents but total current is not zero for node {}",
-                    self.0.borrow().id
-                );
-            }
-
+    pub fn update_voltage(&self) {
+        let mut n = self.borrow_mut();
+        if n.is_fixed {
             return;
         }
 
-        let delta = -total / adjustable as f64;
-
-        self.0.borrow_mut().current = s
-            .iter()
-            .map(|(k, r)| match r {
-                SimResult::Exact(v) => (*k, *v),
-                SimResult::Predict(v) => (*k, v + delta),
-                SimResult::None => (*k, delta),
-            })
-            .collect();
+        if n.acc_conductance > 0.0 {
+            n.voltage = n.acc_current / n.acc_conductance;
+        }
     }
 }
 
@@ -149,18 +85,16 @@ impl PartialEq for Node {
     }
 }
 
+impl Eq for Node {}
+
+impl Hash for Node {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.borrow().id.hash(state);
+    }
+}
+
 impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "V: {}, I: {:?}",
-            self.voltage(),
-            self.0
-                .borrow()
-                .current
-                .values()
-                .cloned()
-                .collect::<Vec<_>>()
-        )
+        write!(f, "V: {:.3}", self.voltage())
     }
 }

@@ -1,4 +1,5 @@
 mod component;
+mod graph;
 mod net;
 mod resistor;
 mod supply;
@@ -7,57 +8,53 @@ use net::Node;
 use resistor::Resistor;
 use supply::VoltageSource;
 
-use crate::component::Edge;
-
-// add BFS but try to follow the direction of current
-// brain how to deal with impossible
-// add capacitors and inductors
+use crate::{component::Edge, graph::GraphApp};
 
 pub fn main() {
+    let mut graph = GraphApp::new();
+
+    let i1 = graph.plot("1");
+    let i2 = graph.plot("1");
+    let i3 = graph.plot("1");
+
     let supply_net = Node::new();
     let ground_net = Node::new();
-    let mid1 = Node::new();
-    let mid2 = Node::new();
-    let mid3 = Node::new();
+    let mid_net = Node::new();
+
+    ground_net.set_fixed(0.0);
 
     let power = Edge::new(VoltageSource::new(
-        10.0,
+        2.0,
         supply_net.clone(),
         ground_net.clone(),
     ));
+    let resistor_one = Edge::new(Resistor::new(0.000001, supply_net.clone(), mid_net.clone()));
+    let resistor_two = Edge::new(Resistor::new(1.0, mid_net.clone(), ground_net.clone()));
 
-    let resistor_one = Edge::new(Resistor::new(1.0, supply_net.clone(), mid1.clone()));
-    let resistor_two = Edge::new(Resistor::new(12.0, mid1.clone(), ground_net.clone()));
-    let resistor_three = Edge::new(Resistor::new(4.0, mid1.clone(), ground_net.clone()));
-    let resistor_four = Edge::new(Resistor::new(1.0, mid1.clone(), mid2.clone()));
-    let resistor_five = Edge::new(Resistor::new(10.0, mid2.clone(), ground_net.clone()));
-    let resistor_six = Edge::new(Resistor::new(2.0, mid2.clone(), mid3.clone()));
-    let resistor_seven = Edge::new(Resistor::new(8.0, mid3.clone(), ground_net.clone()));
+    let components = vec![power.clone(), resistor_one.clone(), resistor_two.clone()];
+    let nodes = vec![supply_net.clone(), ground_net.clone(), mid_net.clone()];
 
-    for _ in 0..100 {
-        supply_net.predict_voltage();
-        mid1.predict_voltage();
-        mid2.predict_voltage();
-        mid3.predict_voltage();
-        ground_net.predict_voltage();
+    for _ in 0..1000 {
+        for node in &nodes {
+            node.clear();
+        }
 
-        supply_net.predict_currents();
-        mid1.predict_currents();
-        mid2.predict_currents();
-        mid3.predict_currents();
-        ground_net.predict_currents();
+        for comp in &components {
+            comp.borrow_mut().step();
+        }
+
+        for node in &nodes {
+            node.update_voltage();
+        }
+
+        i1.add(supply_net.voltage());
+        i2.add(mid_net.voltage());
+        i3.add(ground_net.voltage());
     }
 
     println!("P1: {}", power);
     println!("R1: {}", resistor_one);
     println!("R2: {}", resistor_two);
-    println!("R3: {}", resistor_three);
-    println!("R4: {}", resistor_four);
-    println!("R5: {}", resistor_five);
-    println!("R6: {}", resistor_six);
-    println!("R7: {}", resistor_seven);
 
-    // println!("Power Node: {}", supply_net);
-    // println!("Ref Node: {}", vref_net);
-    // println!("Ground Node: {}", ground_net);
+    graph.run();
 }
