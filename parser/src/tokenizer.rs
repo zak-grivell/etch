@@ -14,7 +14,7 @@ pub enum Punctuation {
 }
 
 #[derive(Debug, Clone, Copy)]
-enum BracketShape {
+pub enum BracketShape {
     Parentathis,
     Squiggle,
     Square,
@@ -107,6 +107,7 @@ impl Punctuation {
 #[derive(Debug)]
 pub enum Keyword {
     Component,
+    Constant,
     Port,
     Let,
     For,

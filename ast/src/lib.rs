@@ -1,12 +1,33 @@
 use std::collections::BTreeMap;
 
 pub enum Main {
-    ComponentDefinition {
-        name: String,
-        parameters: BTreeMap<String, Type>,
-        nets: BTreeMap<String, Type>,
-        varibles: BTreeMap<String, Expression>,
-    },
+    ComponentDefinition(ComponentDefinition),
+    Varible(Varible),
+}
+
+pub struct Varible {
+    pub name: String,
+    pub value: Expression,
+}
+
+pub struct ComponentDefinition {
+    pub name: String,
+    pub parameters: Vec<Parameter>,
+    pub statements: Vec<Statement>,
+}
+
+pub struct Parameter {
+    pub name: String,
+    pub t: Type,
+}
+
+pub enum Statement {
+    VaribleDefinition(Varible),
+    PortDefinition(Port),
+}
+
+pub struct Port {
+    pub name: String,
 }
 
 pub enum Expression {
