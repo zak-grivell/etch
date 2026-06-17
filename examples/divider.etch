@@ -1,0 +1,14 @@
+
+// let VoltageDivider = (r1: Resistance, r2: Resistance) => {
+//	let [ a:vcc, b:mid ] = Resistor(value: r1);
+
+//	let lower_resistor = Resistor(value: r2) <- [
+//		b:mid,
+//	];
+//
+//	return [
+//		vcc,
+// 		mid,
+//		gnd: lower_resistor.b	
+//	];
+//};

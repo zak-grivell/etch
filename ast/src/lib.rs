@@ -1,92 +1,64 @@
-#[derive(Debug, Clone, PartialEq)]
-pub enum Main {
-    ComponentDefinition(ComponentDefinition),
-    Varible(Varible),
-}
+use std::collections::HashMap;
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Varible {
-    pub name: String,
-    pub value: Expression,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ComponentDefinition {
-    pub name: String,
-    pub parameters: Vec<Parameter>,
-    pub statements: Vec<Statement>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Parameter {
-    pub name: String,
-    pub t: Type,
-    pub default: Option<Expression>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Statement {
-    VaribleDefinition(Varible),
-    PortDefinition(Port),
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Port {
-    pub name: String,
-    pub t: Type,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Expression {
-    // Control Flow
-    Switch,
-    ForEach,
-
-    // Data
-    Number,
-    String(String),
-    Voltage,
-    Current,
-    Resistance,
-    Range,
-
-    // Operations on data
-    Operation,
-    Postfix, // mV kO etc
-
-    Identifier(String),
-    Access {
-        base: Box<Expression>,
-        field: String,
+#[derive(Clone, Debug, PartialEq)]
+pub enum Statement<'src> {
+    Definition {
+        name: &'src str,
+        rhs: Box<Expression<'src>>,
     },
-    Quantity {
+    Expression(Expression<'src>),
+    Return {
+        value: Box<Expression<'src>>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum Expression<'src> {
+    // Builtins
+    Match {
+        value: Box<Expression<'src>>,
+        conds: Vec<(Expression<'src>, Expression<'src>)>,
+    },
+    Lambda {
+        params: HashMap<&'src str, Option<&'src str>>,
+        body: Vec<Statement<'src>>,
+    },
+    Block {
+        body: Vec<Statement<'src>>,
+    },
+
+    Ident(&'src str),
+
+    // Primatives
+    Number {
         value: f64,
-        suffix: Option<String>,
+        unit: Option<&'src str>,
     },
-    ComponentInstance {
-        name: String,
-        connections: Vec<Connection>,
-        arguments: Vec<Argument>,
+    String(&'src str),
+    Object(HashMap<&'src str, Expression<'src>>),
+    Boolean(bool),
+    Array(Vec<Expression<'src>>),
+    Some(Box<Expression<'src>>),
+    None,
+
+    // Operations
+    Call {
+        expression: Box<Expression<'src>>,
+        args: HashMap<&'src str, Expression<'src>>,
     },
-}
+    ObjectAcess {
+        expr: Box<Expression<'src>>,
+        field: &'src str,
+    },
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Connection {
-    pub name: String,
-    pub target: Expression,
-}
+    Negate(Box<Expression<'src>>),
+    Flip(Box<Expression<'src>>),
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Argument {
-    pub name: String,
-    pub value: Expression,
-}
+    Add(Box<Expression<'src>>, Box<Expression<'src>>),
+    Sub(Box<Expression<'src>>, Box<Expression<'src>>),
+    Mul(Box<Expression<'src>>, Box<Expression<'src>>),
+    Div(Box<Expression<'src>>, Box<Expression<'src>>),
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum Type {
-    Number { min: Option<f64>, max: Option<f64> },
-    String,
-    Component,
-    Net,
-    Named(String),
+    Union(Box<Expression<'src>>, Box<Expression<'src>>),
+    Wire(Box<Expression<'src>>, Box<Expression<'src>>),
 }

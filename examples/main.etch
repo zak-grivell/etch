@@ -2,29 +2,21 @@
 
 // fuck no wait but how to do if's now :( wait make them expressions i guess ill try and iterate otherwise in design hell for ages
 
-component TransistorSwitcher(threshold: Voltage = 2.5V) {
-    port vcc: Analog;
-    port control: Analog;
-    port gnd: Analog;
-    port out: Analog;
-
-    let protector = Resistor<
+let TransistorSwitcher = (threshold: Voltage) -> {
+    let protector = Resistor(value: 1kO) <- [
 		a:control,
 		b:transistor.a
-	>(value: 1kΩ);
+	];
 	
-    let transistor = NPN<
-		base:protector.b
+    let transistor = NPN() <- [
+		base:protector.b,
 		collector:out,
 		emitter:gnd
-	>();
-}
+	];
 
-component VoltageDivider(r1: Resistance, r2: Resistance) {
-	port vcc: Analog;
-	port mid: Analog;
-	port gnd: Analog;
+	return [
+		vcc: resistor.a,
+		control: resistor.a
+	];
+}};
 
-	let resistor_one = Resistor<a:vcc, b:mid>(value: r1);
-	let resistor_two = Resistor<a:mid, b:gnd>(value: r2);
-}

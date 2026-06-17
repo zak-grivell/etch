@@ -4,8 +4,11 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ariadne = "0.6.0"
 ast = { path = '../ast' }
+chumsky = "0.13.0"
 rust-sitter = "0.4.5"
+strum = { version = "0.28.0", features = ["derive"] }
 
 [build-dependencies]
 rust-sitter-tool = "0.4.5"
