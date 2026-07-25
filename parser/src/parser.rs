@@ -1,161 +1,260 @@
-use ast::Expression;
-use ast::Statement;
+use ast::{
+    Ast, AstNode, BinaryOperator, Expression, Ident, PartialType, Span, Type, UnaryOperator,
+};
 
 use crate::lexer::keyword;
 use crate::lexer::{Keyword, Symbols, Token, symbol};
 use chumsky::input::ValueInput;
 use chumsky::prelude::*;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
-type Span = SimpleSpan;
 type Extra<'src> = extra::Err<Rich<'src, Token<'src>, Span>>;
 
-pub fn parse<'src, I>() -> impl Parser<'src, I, Vec<Statement<'src>>, Extra<'src>>
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParsedExpression {
+    pub expression: Expression<ParsedExpression>,
+}
+
+impl Ast for ParsedExpression {
+    type E = AstNode<ParsedExpression>;
+    type T = PartialType;
+    type I = String;
+
+    type B = BinaryOperator;
+    type U = UnaryOperator;
+
+    fn expression(self) -> Expression<Self> {
+        self.expression
+    }
+}
+
+pub fn parse<'src, I>() -> impl Parser<'src, I, Vec<AstNode<ParsedExpression>>, Extra<'src>>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = Span>,
 {
     let ident = select! {
-        Token::Identifier(name) => name,
+        Token::Identifier(name) => name.to_string(),
     };
 
     recursive(|body| {
-        let expression = recursive(|expression| {
-            // ok
+        recursive(|expression| {
             let atom = choice((
                 select! {
-                    Token::Number { value, prefix, unit } => Expression::Number { value, unit }, // TODO prefix
-                    Token::Bool(val) => Expression::Boolean(val),
-                    Token::Str(s) => Expression::String(s),
+                    Token::Number { value, unit, .. } => Expression::new_number(
+                        value, unit.map(|v| v.to_string() )),
+                    Token::Bool(val) => Expression::new_boolean(val) ,
+                    Token::Str(s) => Expression::new_string(s.to_string()) ,
                 },
                 ident
                     .then_ignore(symbol!(Colon))
                     .then(expression.clone())
                     .separated_by(symbol!(Comma))
                     .allow_trailing()
-                    .collect::<HashMap<_, _>>()
+                    .collect::<BTreeMap<_, _>>()
                     .delimited_by(symbol!(OpenSquare), symbol!(ClosedSquare))
-                    .map(Expression::Object),
+                    .map(Expression::new_object),
                 expression
                     .clone()
                     .separated_by(symbol!(Comma))
                     .collect::<Vec<_>>()
                     .delimited_by(symbol!(OpenSquare), symbol!(ClosedSquare))
-                    .map(Expression::Array),
-                expression
-                    .clone()
-                    .delimited_by(symbol!(OpenParenthesis), symbol!(ClosedParenthesis)),
+                    .map(Expression::new_array),
                 ident
-                    .then(symbol!(Colon).ignore_then(ident).or_not())
+                    .then(symbol!(Colon).ignore_then(ident))
                     .separated_by(symbol!(Comma))
-                    .collect::<HashMap<_, _>>()
+                    .collect::<BTreeMap<_, _>>()
                     .delimited_by(symbol!(OpenParenthesis), symbol!(ClosedParenthesis))
                     .then_ignore(symbol!(Arrow))
                     .then(
                         body.clone()
                             .delimited_by(symbol!(OpenCurly), symbol!(ClosedCurly)),
                     )
-                    .map(|(params, body)| Expression::Lambda { params, body }),
-                body.clone()
-                    .delimited_by(symbol!(OpenCurly), symbol!(ClosedCurly))
-                    .map(|body| Expression::Block { body }),
-                ident.map(Expression::Ident),
+                    .map(|(params, body)| {
+                        let typed_params = params
+                            .into_iter()
+                            .map(|(k, v)| {
+                                (
+                                    k,
+                                    PartialType::T(match v.as_str() {
+                                        "number" => Type::Number,
+                                        "string" => Type::String,
+                                        "bool" => Type::Boolean,
+                                        "void" => Type::Void,
+                                        s => Type::Wrapper {
+                                            name: s.to_string(),
+                                            inner: Box::new(PartialType::T(Type::Number)),
+                                        },
+                                    }),
+                                )
+                            })
+                            .collect();
+
+                        Expression::new_lambda(typed_params, body)
+                    }),
+                ident.map(|value| Ident { value }).map(Expression::Ident),
+            ))
+            .spanned()
+            .map(|spanned_expression: Spanned<_, SimpleSpan>| {
+                AstNode::new(
+                    ParsedExpression {
+                        expression: spanned_expression.inner,
+                    },
+                    spanned_expression.span,
+                )
+            })
+            .boxed();
+
+            let tree = choice((
+                atom,
+                expression
+                    .clone()
+                    .delimited_by(symbol!(OpenParenthesis), symbol!(ClosedParenthesis)),
             ))
             .boxed();
 
-            let dot = atom.foldl(symbol!(Dot).ignore_then(ident).repeated(), |expr, field| {
-                Expression::ObjectAcess {
-                    expr: Box::new(expr),
-                    field,
-                }
-            });
+            let dot = tree
+                .foldl_with(
+                    symbol!(Dot).ignore_then(ident).repeated(),
+                    |expr: AstNode<ParsedExpression>, field, e| {
+                        AstNode::new(
+                            ParsedExpression {
+                                expression: Expression::<ParsedExpression>::new_object_access(
+                                    expr, field,
+                                ),
+                            },
+                            e.span(),
+                        )
+                    },
+                )
+                .boxed();
 
             let call = dot
-                .clone()
-                .foldl(
+                .foldl_with(
                     ident
                         .then_ignore(symbol!(Colon))
                         .then(expression.clone())
                         .separated_by(symbol!(Comma))
-                        .collect::<HashMap<_, _>>()
+                        .collect::<BTreeMap<_, _>>()
                         .delimited_by(symbol!(OpenParenthesis), symbol!(ClosedParenthesis))
                         .repeated(),
-                    |expr, args| Expression::Call {
-                        expression: Box::new(expr),
-                        args,
+                    |expr, args, e| {
+                        AstNode::new(
+                            ParsedExpression {
+                                expression: Expression::new_call(expr, args),
+                            },
+                            e.span(),
+                        )
                     },
                 )
                 .boxed();
 
             let unary = choice((
-                symbol!(Bang).to(Expression::Flip as fn(_) -> _),
-                symbol!(Minus).to(Expression::Negate as fn(_) -> _),
+                symbol!(Bang).to(UnaryOperator::Flip),
+                symbol!(Minus).to(UnaryOperator::Negate),
             ))
             .repeated()
-            .foldr(call.clone(), |op, rhs| op(Box::new(rhs)))
+            .foldr_with(call, |operation, expression, e| {
+                AstNode::new(
+                    ParsedExpression {
+                        expression: Expression::new_unary_operation(expression, operation),
+                    },
+                    e.span(),
+                )
+            })
             .boxed();
 
             let products = unary
                 .clone()
-                .foldl(
+                .foldl_with(
                     choice((
-                        symbol!(Slash).to(Expression::Div as fn(_, _) -> _),
-                        symbol!(Star).to(Expression::Mul as fn(_, _) -> _),
+                        symbol!(Slash).to(BinaryOperator::Div),
+                        symbol!(Star).to(BinaryOperator::Mul),
                     ))
                     .then(unary)
                     .repeated(),
-                    |lhs, (op, rhs)| op(Box::new(lhs), Box::new(rhs)),
+                    |lhs, (op, rhs), e| {
+                        AstNode::new(
+                            ParsedExpression {
+                                expression: Expression::new_binary_operation(lhs, rhs, op),
+                            },
+                            e.span(),
+                        )
+                    },
                 )
                 .boxed();
 
             let sums = products
                 .clone()
-                .foldl(
+                .foldl_with(
                     choice((
-                        symbol!(Plus).to(Expression::Add as fn(_, _) -> _),
-                        symbol!(Minus).to(Expression::Sub as fn(_, _) -> _),
+                        symbol!(Plus).to(BinaryOperator::Add),
+                        symbol!(Minus).to(BinaryOperator::Sub),
                     ))
                     .then(products)
                     .repeated(),
-                    |lhs, (op, rhs)| op(Box::new(lhs), Box::new(rhs)),
+                    |lhs, (op, rhs), e| {
+                        AstNode::new(
+                            ParsedExpression {
+                                expression: Expression::new_binary_operation(lhs, rhs, op),
+                            },
+                            e.span(),
+                        )
+                    },
                 )
                 .boxed();
 
-            sums.clone().foldl(
-                choice((
-                    symbol!(Pipe).to(Expression::Union as fn(_, _) -> _),
-                    symbol!(BackArrow).to(Expression::Wire as fn(_, _) -> _),
-                ))
-                .then(sums)
-                .repeated(),
-                |lhs, (op, rhs)| op(Box::new(lhs), Box::new(rhs)),
-            )
-        });
+            let sums = sums
+                .clone()
+                .foldl_with(
+                    choice((
+                        symbol!(Pipe).to(BinaryOperator::Union),
+                        symbol!(BackArrow).to(BinaryOperator::Wire),
+                    ))
+                    .then(sums)
+                    .repeated(),
+                    |lhs, (op, rhs), e| {
+                        AstNode::new(
+                            ParsedExpression {
+                                expression: Expression::new_binary_operation(lhs, rhs, op),
+                            },
+                            e.span(),
+                        )
+                    },
+                )
+                .boxed();
 
-        let declaration = keyword!(Let)
-            .ignore_then(ident)
-            .then_ignore(symbol!(Equals))
-            .then(expression.clone())
-            .map(|(name, rhs)| Statement::Definition {
-                name,
-                rhs: Box::new(rhs),
-            });
+            let declaration = keyword!(Let)
+                .ignore_then(ident)
+                .then_ignore(symbol!(Equals))
+                .then(expression.clone())
+                .map_with(|(name, rhs), e| {
+                    AstNode::new(
+                        ParsedExpression {
+                            expression: Expression::new_definition(name, rhs),
+                        },
+                        e.span(),
+                    )
+                })
+                .boxed();
 
-        let rtn = keyword!(Return)
-            .ignore_then(expression.clone())
-            .map(|expr| Statement::Return {
-                value: Box::new(expr),
-            });
+            let rtn = keyword!(Return)
+                .ignore_then(expression.clone())
+                .map_with(|expr, e| {
+                    AstNode::new(
+                        ParsedExpression {
+                            expression: Expression::new_return(expr),
+                        },
+                        e.span(),
+                    )
+                })
+                .boxed();
 
-        let statement = declaration
-            .or(rtn)
-            .or(expression.clone().map(Statement::Expression));
-
-        statement
-            .separated_by(symbol!(Semicolon))
-            .allow_trailing()
-            // .recover_with(skip_then_retry_until(any().ignored(), end()))
-            // .repeated()
-            .collect::<Vec<_>>()
+            choice((rtn, declaration, sums))
+        })
+        .separated_by(symbol!(Semicolon))
+        .allow_trailing()
+        .collect::<Vec<_>>()
+        .recover_with(skip_then_retry_until(any().ignored(), end()))
     })
     .then_ignore(end())
 }

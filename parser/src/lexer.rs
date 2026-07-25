@@ -1,6 +1,6 @@
-use chumsky::prelude::*;
+use chumsky::{prelude::*, span::SpanWrap};
 use std::fmt::{self, Debug};
-use strum::{Display, EnumIter, EnumString, IntoEnumIterator};
+use strum::{AsRefStr, Display, EnumIter, EnumString, IntoEnumIterator};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Token<'src> {
@@ -25,9 +25,11 @@ pub enum Keyword {
     Return,
     #[strum(serialize = "match")]
     Match,
+    #[strum(serialize = "type")]
+    Type,
 }
 
-#[derive(Clone, Debug, PartialEq, Display, EnumString, EnumIter)]
+#[derive(Clone, Debug, PartialEq, EnumString, EnumIter, AsRefStr)]
 pub enum Symbols {
     #[strum(serialize = "==")]
     DoubleEquals,
@@ -69,7 +71,7 @@ pub enum Symbols {
     ClosedSquare,
     #[strum(serialize = "{")]
     OpenCurly,
-    #[strum(serialize = "}}")]
+    #[strum(serialize = "}")]
     ClosedCurly,
     #[strum(serialize = "->")]
     Arrow,
@@ -77,6 +79,13 @@ pub enum Symbols {
     Colon,
     #[strum(serialize = "=")]
     Equals,
+}
+
+impl fmt::Display for Symbols {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s: &str = self.as_ref();
+        write!(f, "{}", s)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Display, EnumString, EnumIter)]
@@ -135,7 +144,7 @@ impl fmt::Display for Token<'_> {
 }
 
 pub fn lexer<'src>()
--> impl Parser<'src, &'src str, Vec<(Token<'src>, SimpleSpan)>, extra::Err<Rich<'src, char>>> {
+-> impl Parser<'src, &'src str, Vec<Spanned<Token<'src>>>, extra::Err<Rich<'src, char>>> {
     let num = text::int(10)
         .then(just('.').ignore_then(text::digits(10)).or_not())
         .to_slice()
@@ -154,22 +163,30 @@ pub fn lexer<'src>()
             value,
             prefix,
             unit,
-        });
+        })
+        .labelled("Number");
 
     let string = just('"')
         .ignore_then(none_of('"').repeated().to_slice())
         .then_ignore(just('"'))
-        .map(Token::Str);
+        .map(Token::Str)
+        .labelled("String");
 
-    let symbol = enum_choice(Symbols::iter().collect()).map(Token::Symbol);
+    let symbol = enum_choice(Symbols::iter().collect())
+        .map(Token::Symbol)
+        .labelled("Symbol");
 
-    let keyword = enum_choice(Keyword::iter().collect()).map(Token::Keyword);
+    let keyword = enum_choice(Keyword::iter().collect())
+        .map(Token::Keyword)
+        .labelled("Keyword");
 
-    let ident = text::ascii::ident().map(|ident: &str| match ident {
-        "true" => Token::Bool(true),
-        "false" => Token::Bool(false),
-        _ => Token::Identifier(ident),
-    });
+    let ident = text::ascii::ident()
+        .map(|ident: &str| match ident {
+            "true" => Token::Bool(true),
+            "false" => Token::Bool(false),
+            _ => Token::Identifier(ident),
+        })
+        .labelled("Ident");
 
     let token = choice((num, string, symbol, keyword, ident));
 
@@ -178,13 +195,10 @@ pub fn lexer<'src>()
         .padded();
 
     token
-        .map_with(|tok, e| {
-            let span: SimpleSpan = e.span();
-            (tok, span)
-        })
+        .map_with(|tok, e| tok.with_span(e.span()))
         .padded_by(comment.repeated())
         .padded()
-        // .recover_with(skip_then_retry_until(any().ignored(), end()))
+        .recover_with(skip_then_retry_until(any().ignored(), end()))
         .repeated()
         .collect::<Vec<_>>()
 }

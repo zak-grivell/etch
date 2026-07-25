@@ -2,21 +2,25 @@
 
 // fuck no wait but how to do if's now :( wait make them expressions i guess ill try and iterate otherwise in design hell for ages
 
-let TransistorSwitcher = (threshold: Voltage) -> {
-    let protector = Resistor(value: 1kO) <- [
-		a:control,
-		b:transistor.a
-	];
-	
-    let transistor = NPN() <- [
-		base:protector.b,
-		collector:out,
-		emitter:gnd
-	];
 
-	return [
-		vcc: resistor.a,
-		control: resistor.a
-	];
-}};
+// let TransistorSwitcher = (threshold: voltage) -> {
+//     let protector = Resistor(value: 1kO) <- [
+// 		a:control,
+// 	];
+// 	
+//     let transistor = NPN() <- [
+// 		base:protector.b,
+// 		collector:out,
+// 		emitter:gnd
+// 	];
+// 
+// 	return [
+// 		vcc: resistor.a,
+// 		control: resistor.a
+// 	];
+// }};
+// 
+// let switch = TransistorSwitcher(threshold:2V);
 
+
+let s = () -> { return "hi" + 1 };
