@@ -23,4 +23,7 @@
 // let switch = TransistorSwitcher(threshold:2V);
 
 
-let s = () -> { return "hi" + 1 };
+let add_one = (x: number) -> { return x + 1 };
+
+let one = 1;
+let two = add_one(x:one);

@@ -1,19 +1,21 @@
-use crate::resolver::SymbolicExpression;
+use crate::lexer::Token;
+use crate::resolver::SymbolMetadata;
 use ast::{
     Ast, AstNode, AstTransform, BinaryOperation, BinaryOperator, Call, Definition, Expression,
     Lambda, Match, Object, ObjectAccess, PartialType, Results, Return, Span, Symbol, Type,
     UnaryOperation, UnaryOperator,
 };
+use chumsky::error::Rich;
 use chumsky::span::{SpanWrap, Spanned};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PartiallyTypedExpression {
-    t: PartialType,
-    expression: Expression<PartiallyTypedExpression>,
+pub struct PartialMetadata {
+    pub t: PartialType,
+    pub span: Span,
 }
 
-impl Ast for PartiallyTypedExpression {
+impl Ast for PartialMetadata {
     type E = AstNode<Self>;
     type T = PartialType;
 
@@ -22,10 +24,6 @@ impl Ast for PartiallyTypedExpression {
     type U = Option<TypedUnaryOperator>;
 
     type B = Option<TypedBinaryOperator>;
-
-    fn expression(self) -> Expression<Self> {
-        self.expression
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,6 +131,12 @@ impl Display for SemanticError {
     }
 }
 
+impl SemanticError {
+    pub fn into_rich<'src>(self, span: Span) -> Rich<'src, String, Span> {
+        Rich::custom(span, format!("{self}"))
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct TypeResolver {
     types: BTreeMap<Symbol, PartialType>,
@@ -156,115 +160,136 @@ fn resolve_multiple_types(items: impl Iterator<Item = PartialType>) -> PartialTy
     }
 }
 
-// cannot return partially typed
-
 impl AstTransform for TypeResolver {
     type Error = Spanned<SemanticError>;
-    type From = SymbolicExpression;
-    type To = PartiallyTypedExpression;
+    type From = SymbolMetadata;
+    type To = PartialMetadata;
 
     fn transform_definition(
         &mut self,
-        Definition { name, rhs }: Definition<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        self.transform(rhs).map(|rhs| {
-            self.types
-                .insert(name.clone().unwrap(), rhs.expr.t.clone());
+        definition: Definition<Self::From>,
+        meta: SymbolMetadata,
+    ) -> Results<(Definition<Self::To>, Self::To), Self::Error> {
+        let name = definition.name.clone().unwrap();
+        self.transform(definition.rhs).map(|rhs| {
+            let t = rhs.meta.t.clone();
+            self.types.insert(name, t.clone());
 
-            PartiallyTypedExpression {
-                t: rhs.expr.t.clone(),
-                expression: Expression::new_definition(name, rhs),
-            }
+            (
+                Definition {
+                    name: definition.name,
+                    rhs,
+                },
+                PartialMetadata { t, span: meta.span },
+            )
         })
     }
 
     fn transform_return(
         &mut self,
         rtn: Return<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        self.transform(rtn.expression)
-            .map(|expression| PartiallyTypedExpression {
-                t: PartialType::T(Type::Never),
-                expression: Expression::new_return(expression),
-            })
+        meta: SymbolMetadata,
+    ) -> Results<(Return<Self::To>, Self::To), Self::Error> {
+        self.transform(rtn.expression).map(|expression| {
+            (
+                Return { expression },
+                PartialMetadata {
+                    t: PartialType::T(Type::Never),
+                    span: meta.span,
+                },
+            )
+        })
     }
 
     fn transform_match(
         &mut self,
         mtch: Match<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        meta: SymbolMetadata,
+    ) -> Results<(Match<Self::To>, Self::To), Self::Error> {
         let conds = mtch
             .conds
             .into_iter()
             .map(|(a, b)| self.transform(a).zip(self.transform(b)))
             .collect::<Results<Vec<_>, _>>();
 
-        self.transform(mtch.value)
-            .zip(conds)
-            .map(|(value, conds)| PartiallyTypedExpression {
-                t: PartialType::T(Type::Union {
-                    options: conds.iter().map(|(_, v)| v.expr.t.clone()).collect(),
-                }),
-                expression: Expression::new_match(value, conds),
-            })
+        self.transform(mtch.value).zip(conds).map(|(value, conds)| {
+            let t = PartialType::T(Type::Union {
+                options: conds.iter().map(|(_, v)| v.meta.t.clone()).collect(),
+            });
+            (
+                Match { value, conds },
+                PartialMetadata { t, span: meta.span },
+            )
+        })
     }
 
     fn transform_ident(
         &mut self,
         ident: ast::Ident<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        Results::ok(PartiallyTypedExpression {
-            t: if let Some(ident) = &ident.value {
-                self.types.get(ident).unwrap().clone()
-            } else {
-                PartialType::Unknown
+        meta: SymbolMetadata,
+    ) -> Results<(ast::Ident<Self::To>, Self::To), Self::Error> {
+        Results::ok((
+            ast::Ident {
+                value: ident.value.clone(),
             },
-            expression: Expression::new_ident(ident.value),
-        })
+            PartialMetadata {
+                t: if let Some(ident) = &ident.value {
+                    self.types.get(ident).unwrap().clone()
+                } else {
+                    PartialType::Unknown
+                },
+                span: meta.span,
+            },
+        ))
     }
 
     fn transform_number(
         &mut self,
         number: ast::NumberLiteral,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        Results::ok(PartiallyTypedExpression {
-            t: PartialType::T(Type::Number),
-            expression: Expression::new_number(number.value, number.unit),
-        })
+        meta: SymbolMetadata,
+    ) -> Results<(ast::NumberLiteral, Self::To), Self::Error> {
+        Results::ok((
+            number,
+            PartialMetadata {
+                t: PartialType::T(Type::Number),
+                span: meta.span,
+            },
+        ))
     }
 
     fn transform_string(
         &mut self,
         string: ast::StringLiteral,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        Results::ok(PartiallyTypedExpression {
-            t: PartialType::T(Type::String),
-            expression: Expression::new_string(string.value),
-        })
+        meta: SymbolMetadata,
+    ) -> Results<(ast::StringLiteral, Self::To), Self::Error> {
+        Results::ok((
+            string,
+            PartialMetadata {
+                t: PartialType::T(Type::String),
+                span: meta.span,
+            },
+        ))
     }
 
     fn transform_boolean(
         &mut self,
         boolean: ast::BooleanLiteral,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        Results::ok(PartiallyTypedExpression {
-            t: PartialType::T(Type::Boolean),
-            expression: Expression::new_boolean(boolean.value),
-        })
+        meta: SymbolMetadata,
+    ) -> Results<(ast::BooleanLiteral, Self::To), Self::Error> {
+        Results::ok((
+            boolean,
+            PartialMetadata {
+                t: PartialType::T(Type::Boolean),
+                span: meta.span,
+            },
+        ))
     }
 
     fn transform_array(
         &mut self,
         array: ast::Array<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        meta: SymbolMetadata,
+    ) -> Results<(ast::Array<Self::To>, Self::To), Self::Error> {
         let items = array
             .items
             .into_iter()
@@ -274,21 +299,24 @@ impl AstTransform for TypeResolver {
         items.map(|items| {
             let elem = items
                 .first()
-                .map(|e| e.expr.t.clone())
+                .map(|e| e.meta.t.clone())
                 .unwrap_or(PartialType::Unknown);
 
-            PartiallyTypedExpression {
-                t: PartialType::T(Type::Array(Box::new(elem))),
-                expression: Expression::new_array(items),
-            }
+            (
+                ast::Array { items },
+                PartialMetadata {
+                    t: PartialType::T(Type::Array(Box::new(elem))),
+                    span: meta.span,
+                },
+            )
         })
     }
 
     fn transform_object(
         &mut self,
         Object { fields }: Object<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        meta: SymbolMetadata,
+    ) -> Results<(Object<Self::To>, Self::To), Self::Error> {
         let fields = fields
             .into_iter()
             .map(|(k, v)| self.transform(v).map(|v| (k, v)))
@@ -298,21 +326,18 @@ impl AstTransform for TypeResolver {
             let t = PartialType::T(Type::Object {
                 fields: fields
                     .iter()
-                    .map(|(k, v)| (k.clone(), v.expr.t.clone()))
+                    .map(|(k, v)| (k.clone(), v.meta.t.clone()))
                     .collect(),
             });
-            PartiallyTypedExpression {
-                t,
-                expression: Expression::new_object(fields),
-            }
+            (Object { fields }, PartialMetadata { t, span: meta.span })
         })
     }
 
     fn transform_lambda(
         &mut self,
         lambda: Lambda<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        meta: SymbolMetadata,
+    ) -> Results<(Lambda<Self::To>, Self::To), Self::Error> {
         self.types.extend(
             lambda
                 .params
@@ -328,14 +353,10 @@ impl AstTransform for TypeResolver {
 
         body.map(|body| {
             let return_type =
-                resolve_multiple_types(body.iter().filter_map(
-                    |expr| match &expr.expr.expression {
-                        Expression::Return(Return { expression }) => {
-                            Some(expression.expr.t.clone())
-                        }
-                        _ => None,
-                    },
-                ));
+                resolve_multiple_types(body.iter().filter_map(|expr| match &*expr.expr {
+                    Expression::Return(Return { expression }) => Some(expression.meta.t.clone()),
+                    _ => None,
+                }));
 
             let t = PartialType::T(Type::Lambda {
                 params: lambda
@@ -346,51 +367,66 @@ impl AstTransform for TypeResolver {
                 rtn: Box::new(return_type),
             });
 
-            PartiallyTypedExpression {
-                t,
-                expression: Expression::new_lambda(lambda.params, body),
-            }
+            (
+                Lambda {
+                    params: lambda.params,
+                    body,
+                },
+                PartialMetadata { t, span: meta.span },
+            )
         })
     }
 
     fn transform_unary_op(
         &mut self,
         UnaryOperation { arg, op }: UnaryOperation<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        meta: SymbolMetadata,
+    ) -> Results<(UnaryOperation<Self::To>, Self::To), Self::Error> {
         self.transform(arg).flat_map(|arg| {
-            let PartialType::T(ty) = arg.expr.t.clone() else {
-                return Results::ok(PartiallyTypedExpression {
-                    t: PartialType::Unknown,
-                    expression: Expression::new_unary_operation(arg, None),
-                });
+            let PartialType::T(ty) = arg.meta.t.clone() else {
+                return Results::ok((
+                    UnaryOperation { arg, op: None },
+                    PartialMetadata {
+                        t: PartialType::Unknown,
+                        span: meta.span,
+                    },
+                ));
             };
 
             match (&ty, &op) {
-                (Type::Number, UnaryOperator::Negate) => Results::ok(PartiallyTypedExpression {
-                    t: PartialType::T(Type::Number),
-                    expression: Expression::new_unary_operation(
-                        arg.clone(),
-                        Some(TypedUnaryOperator::NegateNumber),
-                    ),
-                }),
-                (Type::Boolean, UnaryOperator::Flip) => Results::ok(PartiallyTypedExpression {
-                    t: PartialType::T(Type::Boolean),
-                    expression: Expression::new_unary_operation(
+                (Type::Number, UnaryOperator::Negate) => Results::ok((
+                    UnaryOperation {
                         arg,
-                        Some(TypedUnaryOperator::FlipBool),
-                    ),
-                }),
-                (_, _) => Results::with_error(
-                    PartiallyTypedExpression {
-                        t: PartialType::Unknown,
-                        expression: Expression::new_unary_operation(arg, None),
+                        op: Some(TypedUnaryOperator::NegateNumber),
                     },
+                    PartialMetadata {
+                        t: PartialType::T(Type::Number),
+                        span: meta.span,
+                    },
+                )),
+                (Type::Boolean, UnaryOperator::Flip) => Results::ok((
+                    UnaryOperation {
+                        arg,
+                        op: Some(TypedUnaryOperator::FlipBool),
+                    },
+                    PartialMetadata {
+                        t: PartialType::T(Type::Boolean),
+                        span: meta.span,
+                    },
+                )),
+                (_, _) => Results::with_error(
+                    (
+                        UnaryOperation { arg, op: None },
+                        PartialMetadata {
+                            t: PartialType::Unknown,
+                            span: meta.span,
+                        },
+                    ),
                     SemanticError::InvalidUrinaryOperation {
                         operator: op.clone(),
                         t: PartialType::T(ty.clone()),
                     }
-                    .with_span(span),
+                    .with_span(meta.span),
                 ),
             }
         })
@@ -399,23 +435,29 @@ impl AstTransform for TypeResolver {
     fn transform_binary_op(
         &mut self,
         BinaryOperation { lhs, rhs, op }: BinaryOperation<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        meta: SymbolMetadata,
+    ) -> Results<(BinaryOperation<Self::To>, Self::To), Self::Error> {
         self.transform(lhs)
             .zip(self.transform(rhs))
             .flat_map(|(lhs, rhs)| {
-                let PartialType::T(lhs_type) = lhs.expr.t.clone() else {
-                    return Results::ok(PartiallyTypedExpression {
-                        t: PartialType::Unknown,
-                        expression: Expression::new_binary_operation(lhs, rhs, None),
-                    });
+                let PartialType::T(lhs_type) = lhs.meta.t.clone() else {
+                    return Results::ok((
+                        BinaryOperation { lhs, rhs, op: None },
+                        PartialMetadata {
+                            t: PartialType::Unknown,
+                            span: meta.span,
+                        },
+                    ));
                 };
 
-                let PartialType::T(rhs_type) = rhs.expr.t.clone() else {
-                    return Results::ok(PartiallyTypedExpression {
-                        t: PartialType::Unknown,
-                        expression: Expression::new_binary_operation(lhs, rhs, None),
-                    });
+                let PartialType::T(rhs_type) = rhs.meta.t.clone() else {
+                    return Results::ok((
+                        BinaryOperation { lhs, rhs, op: None },
+                        PartialMetadata {
+                            t: PartialType::Unknown,
+                            span: meta.span,
+                        },
+                    ));
                 };
 
                 let Some((result_type, typed_op)) = (match (&op, &lhs_type, &rhs_type) {
@@ -438,31 +480,41 @@ impl AstTransform for TypeResolver {
                     _ => None,
                 }) else {
                     return Results::with_error(
-                        PartiallyTypedExpression {
-                            t: PartialType::Unknown,
-                            expression: Expression::new_binary_operation(lhs, rhs, None),
-                        },
+                        (
+                            BinaryOperation { lhs, rhs, op: None },
+                            PartialMetadata {
+                                t: PartialType::Unknown,
+                                span: meta.span,
+                            },
+                        ),
                         SemanticError::InvalidBinaryOperation {
                             operator: op.clone(),
                             left: PartialType::T(lhs_type.clone()),
                             right: PartialType::T(rhs_type.clone()),
                         }
-                        .with_span(span),
+                        .with_span(meta.span),
                     );
                 };
 
-                Results::ok(PartiallyTypedExpression {
-                    t: result_type,
-                    expression: Expression::new_binary_operation(lhs, rhs, Some(typed_op)),
-                })
+                Results::ok((
+                    BinaryOperation {
+                        lhs,
+                        rhs,
+                        op: Some(typed_op),
+                    },
+                    PartialMetadata {
+                        t: result_type,
+                        span: meta.span,
+                    },
+                ))
             })
     }
 
     fn transform_call(
         &mut self,
         Call { expression, args }: Call<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        meta: SymbolMetadata,
+    ) -> Results<(Call<Self::To>, Self::To), Self::Error> {
         let args = args
             .into_iter()
             .map(|(k, v)| self.transform(v).map(|v| (k, v)))
@@ -470,67 +522,85 @@ impl AstTransform for TypeResolver {
 
         args.zip(self.transform(expression))
             .flat_map(|(args, expression)| {
-                let PartialType::T(ty) = expression.expr.t.clone() else {
-                    return Results::ok(PartiallyTypedExpression {
-                        t: PartialType::Unknown,
-                        expression: Expression::new_call(expression, args),
-                    });
+                let PartialType::T(ty) = expression.meta.t.clone() else {
+                    return Results::ok((
+                        Call { expression, args },
+                        PartialMetadata {
+                            t: PartialType::Unknown,
+                            span: meta.span,
+                        },
+                    ));
                 };
 
                 let Type::Lambda { params, rtn } = ty.clone() else {
                     return Results::with_error(
-                        PartiallyTypedExpression {
-                            t: PartialType::Unknown,
-                            expression: Expression::new_call(expression, args.clone()),
-                        },
+                        (
+                            Call {
+                                expression,
+                                args: args.clone(),
+                            },
+                            PartialMetadata {
+                                t: PartialType::Unknown,
+                                span: meta.span,
+                            },
+                        ),
                         SemanticError::TypeMismatch {
                             expected: PartialType::T(Type::Lambda {
                                 params: args
                                     .iter()
-                                    .map(|(k, v)| (k.clone().unwrap(), v.expr.t.clone()))
+                                    .map(|(k, v)| (Symbol::dummy(k.clone()), v.meta.t.clone()))
                                     .collect(),
                                 rtn: Box::new(PartialType::Unknown),
                             }),
                             found: PartialType::T(ty),
                         }
-                        .with_span(span),
+                        .with_span(meta.span),
                     );
                 };
 
-                let result = PartiallyTypedExpression {
-                    t: (*rtn).clone(),
-                    expression: Expression::new_call(expression, args.clone()),
-                };
+                let result = (
+                    Call {
+                        expression,
+                        args: args.clone(),
+                    },
+                    PartialMetadata {
+                        t: (*rtn).clone(),
+                        span: meta.span,
+                    },
+                );
+
+                let required = params
+                    .iter()
+                    .map(|(k, v)| (k.original.clone(), v.clone()))
+                    .collect::<BTreeMap<_, _>>();
 
                 let missing = params
                     .iter()
-                    .filter(|&(name, _)| !args.contains_key(&Some(name.clone())))
+                    .filter(|&(name, _)| !args.contains_key(&name.original))
                     .map(|(name, expected)| {
                         SemanticError::ArgumentMissing {
                             name: name.original.clone(),
                             t: expected.clone(),
                         }
-                        .with_span(span)
+                        .with_span(meta.span)
                     });
 
                 let supplied = args.iter().filter_map(|(name, value)| {
-                    let name = name.clone().unwrap();
+                    let name = name.clone();
 
-                    match params.get(&name) {
-                        Some(expected) if *expected == value.expr.t => None,
+                    match required.get(&name) {
+                        Some(expected) if *expected == value.meta.t => None,
                         Some(expected) => Some(
                             SemanticError::InvalidArgumentType {
-                                name: name.original.clone(),
+                                name: name.clone(),
                                 expected: expected.clone(),
-                                got: value.expr.t.clone(),
+                                got: value.meta.t.clone(),
                             }
-                            .with_span(span),
+                            .with_span(meta.span),
                         ),
                         None => Some(
-                            SemanticError::ExtraArgument {
-                                name: name.original.clone(),
-                            }
-                            .with_span(span),
+                            SemanticError::ExtraArgument { name: name.clone() }
+                                .with_span(meta.span),
                         ),
                     }
                 });
@@ -542,46 +612,67 @@ impl AstTransform for TypeResolver {
     fn transform_object_access(
         &mut self,
         ObjectAccess { expression, field }: ObjectAccess<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        meta: SymbolMetadata,
+    ) -> Results<(ObjectAccess<Self::To>, Self::To), Self::Error> {
         self.transform(expression).flat_map(|expression| {
-            let PartialType::T(ty) = expression.expr.t.clone() else {
-                return Results::ok(PartiallyTypedExpression {
-                    t: PartialType::Unknown,
-                    expression: Expression::new_object_access(expression, field),
-                });
+            let PartialType::T(ty) = expression.meta.t.clone() else {
+                return Results::ok((
+                    ObjectAccess { expression, field },
+                    PartialMetadata {
+                        t: PartialType::Unknown,
+                        span: meta.span,
+                    },
+                ));
             };
 
             let Type::Object { fields } = ty.clone() else {
                 return Results::with_error(
-                    PartiallyTypedExpression {
-                        t: PartialType::Unknown,
-                        expression: Expression::new_object_access(expression, field.clone()),
-                    },
+                    (
+                        ObjectAccess {
+                            expression,
+                            field: field.clone(),
+                        },
+                        PartialMetadata {
+                            t: PartialType::Unknown,
+                            span: meta.span,
+                        },
+                    ),
                     SemanticError::InvalidFieldAccess {
                         object: PartialType::T(ty.clone()),
                         field: field.clone(),
                     }
-                    .with_span(span),
+                    .with_span(meta.span),
                 );
             };
 
             if let Some(t) = fields.get(&field) {
-                Results::ok(PartiallyTypedExpression {
-                    t: t.clone(),
-                    expression: Expression::new_object_access(expression, field.clone()),
-                })
+                Results::ok((
+                    ObjectAccess {
+                        expression,
+                        field: field.clone(),
+                    },
+                    PartialMetadata {
+                        t: t.clone(),
+                        span: meta.span,
+                    },
+                ))
             } else {
                 Results::with_error(
-                    PartiallyTypedExpression {
-                        t: PartialType::Unknown,
-                        expression: Expression::new_object_access(expression, field.clone()),
-                    },
+                    (
+                        ObjectAccess {
+                            expression,
+                            field: field.clone(),
+                        },
+                        PartialMetadata {
+                            t: PartialType::Unknown,
+                            span: meta.span,
+                        },
+                    ),
                     SemanticError::InvalidFieldAccess {
                         object: PartialType::T(ty.clone()),
                         field: field.clone(),
                     }
-                    .with_span(span),
+                    .with_span(meta.span),
                 )
             }
         })

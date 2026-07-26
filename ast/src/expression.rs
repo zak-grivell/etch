@@ -1,7 +1,7 @@
 use crate::ast::Ast;
 use derive_more::From;
 use std::collections::BTreeMap;
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Definition<A: Ast> {
@@ -45,7 +45,7 @@ pub struct Lambda<A: Ast> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Call<A: Ast> {
     pub expression: A::E,
-    pub args: BTreeMap<A::I, A::E>,
+    pub args: BTreeMap<String, A::E>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -75,6 +75,11 @@ pub struct BooleanLiteral {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Ident<A: Ast> {
     pub value: A::I,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Node {
+    id: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -121,7 +126,7 @@ pub struct Array<A: Ast> {
 }
 
 #[derive(Debug, PartialEq, Clone, From)]
-pub enum Expression<A: Ast> {
+pub enum Expression<A: Ast + PartialEq + Clone + Debug> {
     Definition(Definition<A>),
 
     Return(Return<A>),
@@ -191,7 +196,7 @@ impl<A: Ast> Expression<A> {
         Self::BinaryOperation(BinaryOperation { lhs, rhs, op })
     }
 
-    pub fn new_call(expression: A::E, args: BTreeMap<A::I, A::E>) -> Self {
+    pub fn new_call(expression: A::E, args: BTreeMap<String, A::E>) -> Self {
         Self::Call(Call { expression, args })
     }
 

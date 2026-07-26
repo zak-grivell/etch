@@ -11,24 +11,20 @@ use std::collections::BTreeMap;
 type Extra<'src> = extra::Err<Rich<'src, Token<'src>, Span>>;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ParsedExpression {
-    pub expression: Expression<ParsedExpression>,
+pub struct ParsedMetadata {
+    pub span: Span,
 }
 
-impl Ast for ParsedExpression {
-    type E = AstNode<ParsedExpression>;
+impl Ast for ParsedMetadata {
+    type E = AstNode<ParsedMetadata>;
     type T = PartialType;
     type I = String;
 
     type B = BinaryOperator;
     type U = UnaryOperator;
-
-    fn expression(self) -> Expression<Self> {
-        self.expression
-    }
 }
 
-pub fn parse<'src, I>() -> impl Parser<'src, I, Vec<AstNode<ParsedExpression>>, Extra<'src>>
+pub fn parse<'src, I>() -> impl Parser<'src, I, Vec<AstNode<ParsedMetadata>>, Extra<'src>>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = Span>,
 {
@@ -96,10 +92,10 @@ where
             .spanned()
             .map(|spanned_expression: Spanned<_, SimpleSpan>| {
                 AstNode::new(
-                    ParsedExpression {
-                        expression: spanned_expression.inner,
+                    spanned_expression.inner,
+                    ParsedMetadata {
+                        span: spanned_expression.span,
                     },
-                    spanned_expression.span,
                 )
             })
             .boxed();
@@ -115,14 +111,10 @@ where
             let dot = tree
                 .foldl_with(
                     symbol!(Dot).ignore_then(ident).repeated(),
-                    |expr: AstNode<ParsedExpression>, field, e| {
+                    |expr: AstNode<ParsedMetadata>, field, e| {
                         AstNode::new(
-                            ParsedExpression {
-                                expression: Expression::<ParsedExpression>::new_object_access(
-                                    expr, field,
-                                ),
-                            },
-                            e.span(),
+                            Expression::<ParsedMetadata>::new_object_access(expr, field),
+                            ParsedMetadata { span: e.span() },
                         )
                     },
                 )
@@ -139,10 +131,8 @@ where
                         .repeated(),
                     |expr, args, e| {
                         AstNode::new(
-                            ParsedExpression {
-                                expression: Expression::new_call(expr, args),
-                            },
-                            e.span(),
+                            Expression::new_call(expr, args),
+                            ParsedMetadata { span: e.span() },
                         )
                     },
                 )
@@ -155,10 +145,8 @@ where
             .repeated()
             .foldr_with(call, |operation, expression, e| {
                 AstNode::new(
-                    ParsedExpression {
-                        expression: Expression::new_unary_operation(expression, operation),
-                    },
-                    e.span(),
+                    Expression::new_unary_operation(expression, operation),
+                    ParsedMetadata { span: e.span() },
                 )
             })
             .boxed();
@@ -174,10 +162,8 @@ where
                     .repeated(),
                     |lhs, (op, rhs), e| {
                         AstNode::new(
-                            ParsedExpression {
-                                expression: Expression::new_binary_operation(lhs, rhs, op),
-                            },
-                            e.span(),
+                            Expression::new_binary_operation(lhs, rhs, op),
+                            ParsedMetadata { span: e.span() },
                         )
                     },
                 )
@@ -194,10 +180,8 @@ where
                     .repeated(),
                     |lhs, (op, rhs), e| {
                         AstNode::new(
-                            ParsedExpression {
-                                expression: Expression::new_binary_operation(lhs, rhs, op),
-                            },
-                            e.span(),
+                            Expression::new_binary_operation(lhs, rhs, op),
+                            ParsedMetadata { span: e.span() },
                         )
                     },
                 )
@@ -214,10 +198,8 @@ where
                     .repeated(),
                     |lhs, (op, rhs), e| {
                         AstNode::new(
-                            ParsedExpression {
-                                expression: Expression::new_binary_operation(lhs, rhs, op),
-                            },
-                            e.span(),
+                            Expression::new_binary_operation(lhs, rhs, op),
+                            ParsedMetadata { span: e.span() },
                         )
                     },
                 )
@@ -229,10 +211,8 @@ where
                 .then(expression.clone())
                 .map_with(|(name, rhs), e| {
                     AstNode::new(
-                        ParsedExpression {
-                            expression: Expression::new_definition(name, rhs),
-                        },
-                        e.span(),
+                        Expression::new_definition(name, rhs),
+                        ParsedMetadata { span: e.span() },
                     )
                 })
                 .boxed();
@@ -241,10 +221,8 @@ where
                 .ignore_then(expression.clone())
                 .map_with(|expr, e| {
                     AstNode::new(
-                        ParsedExpression {
-                            expression: Expression::new_return(expr),
-                        },
-                        e.span(),
+                        Expression::new_return(expr),
+                        ParsedMetadata { span: e.span() },
                     )
                 })
                 .boxed();

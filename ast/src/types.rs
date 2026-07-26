@@ -13,10 +13,17 @@ pub enum PartialType {
 }
 
 impl PartialType {
-    fn unwrap(self) -> StrongType {
+    pub fn unwrap(self) -> StrongType {
         match self {
             PartialType::T(t) => StrongType(t.map(|v| v.unwrap())),
             PartialType::Unknown => panic!("should be typed"),
+        }
+    }
+
+    pub fn try_unwrap(self) -> Option<StrongType> {
+        match self {
+            PartialType::T(t) => Some(StrongType(t.try_map(|v| v.try_unwrap())?)),
+            PartialType::Unknown => None,
         }
     }
 }
@@ -53,7 +60,7 @@ pub enum Type<T> {
 }
 
 impl<T> Type<T> {
-    fn map<U: Ord>(self, mut f: impl FnMut(T) -> U) -> Type<U> {
+    pub fn map<U: Ord>(self, mut f: impl FnMut(T) -> U) -> Type<U> {
         match self {
             Type::Number => Type::Number,
             Type::String => Type::String,
@@ -77,6 +84,38 @@ impl<T> Type<T> {
             },
             Type::Never => Type::Never,
         }
+    }
+
+    pub fn try_map<U: Ord>(self, mut f: impl FnMut(T) -> Option<U>) -> Option<Type<U>> {
+        Some(match self {
+            Type::Number => Type::Number,
+            Type::String => Type::String,
+            Type::Boolean => Type::Boolean,
+            Type::Void => Type::Void,
+            Type::Object { fields } => Type::Object {
+                fields: fields
+                    .into_iter()
+                    .map(|(k, v)| Some((k, f(v)?)))
+                    .collect::<Option<_>>()?,
+            },
+            Type::Array(t) => Type::Array(Box::new(f(*t)?)),
+            Type::Optional(t) => Type::Optional(Box::new(f(*t)?)),
+            Type::Lambda { params, rtn } => Type::Lambda {
+                params: params
+                    .into_iter()
+                    .map(|(k, v)| Some((k, f(v)?)))
+                    .collect::<Option<_>>()?,
+                rtn: Box::new(f(*rtn)?),
+            },
+            Type::Union { options } => Type::Union {
+                options: options.into_iter().map(|v| f(v)).collect::<Option<_>>()?,
+            },
+            Type::Wrapper { name, inner } => Type::Wrapper {
+                name,
+                inner: Box::new(f(*inner)?),
+            },
+            Type::Never => Type::Never,
+        })
     }
 }
 use std::fmt::{self, Display};

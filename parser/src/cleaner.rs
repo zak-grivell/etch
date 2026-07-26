@@ -1,181 +1,224 @@
-use std::{collections::BTreeMap};
+use std::collections::BTreeMap;
 
 use ast::{
-    Array, Ast, AstNode, AstTransform, BinaryOperation, BinaryOperator, BooleanLiteral, Call,
-    Definition, Expression, Ident, Lambda, NumberLiteral, Object, ObjectAccess, PartialType,
-    Results, Span, StringLiteral, StrongType, Symbol, UnaryOperation, UnaryOperator,
+    Ast, AstNode, AstTransform, BinaryOperation, BooleanLiteral, Call, Definition, Lambda, Match,
+    NumberLiteral, Object, ObjectAccess, PartialType, Results, Return, Span, StringLiteral,
+    StrongType, Symbol, Type, UnaryOperation,
 };
-use chumsky::span::{SpanWrap, Spanned};
+use chumsky::{
+    error::Rich,
+    span::{SpanWrap, Spanned},
+};
 
-use crate::parser::ParsedExpression;
-use crate::semantic::{PartiallyTypedExpression, TypedBinaryOperator, TypedUnaryOperator};
+use crate::semantic::{PartialMetadata, TypedBinaryOperator, TypedUnaryOperator};
 
 #[derive(Debug, Clone, PartialEq)]
-struct StrippedExpression {
-    expression: Expression<StrippedExpression>,
-    t: StrongType,
+pub struct StrongMetadata {
+    pub t: StrongType,
+    pub span: Span,
 }
 
-impl Ast for StrippedExpression {
+impl Ast for StrongMetadata {
     type E = AstNode<Self>;
     type I = Symbol;
     type T = StrongType;
 
     type B = TypedBinaryOperator;
     type U = TypedUnaryOperator;
+}
 
-    fn expression(self) -> Expression<Self> {
-        self.expression
+#[derive(Debug, Clone)]
+pub enum CleanError {
+    UnresolvedType,
+    UnresolvedSymbol,
+    UnresolvedOperator,
+}
+
+impl std::fmt::Display for CleanError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CleanError::UnresolvedType => write!(f, "unresolved type"),
+            CleanError::UnresolvedSymbol => write!(f, "unresolved symbol"),
+            CleanError::UnresolvedOperator => write!(f, "unresolved operator"),
+        }
     }
 }
 
-struct ExpressionStripper;
+impl CleanError {
+    pub fn into_rich<'src>(self, span: Span) -> Rich<'src, String, Span> {
+        Rich::custom(span, format!("{self}"))
+    }
+}
+
+fn try_unwrap_type(t: PartialType, span: Span) -> Results<StrongType, Spanned<CleanError>> {
+    match t.try_unwrap() {
+        Some(strong) => Results::ok(strong),
+        None => Results::with_error(
+            StrongType(Type::Never),
+            CleanError::UnresolvedType.with_span(span),
+        ),
+    }
+}
+
+fn strong_meta(t: PartialType, span: Span) -> Results<StrongMetadata, Spanned<CleanError>> {
+    try_unwrap_type(t, span).map(|t| StrongMetadata { t, span })
+}
+
+pub struct ExpressionStripper;
 
 impl AstTransform for ExpressionStripper {
-    type Error = ();
-    type From = PartiallyTypedExpression;
-    type To = StrippedExpression;
+    type Error = Spanned<CleanError>;
+    type From = PartialMetadata;
+    type To = StrongMetadata;
 
     fn transform_definition(
         &mut self,
-        definition: Definition<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        self.transform(definition.rhs)
-            .map(|rhs| StrippedExpression {
-                expression: Expression::new_definition(symbol, rhs),
-                t: definition.
+        Definition { name, rhs }: Definition<Self::From>,
+        meta: PartialMetadata,
+    ) -> Results<(Definition<Self::To>, Self::To), Self::Error> {
+        let name = match name {
+            Some(s) => Results::ok(s),
+            None => Results::with_error(
+                Symbol {
+                    id: 0,
+                    original: String::new(),
+                },
+                CleanError::UnresolvedSymbol.with_span(meta.span),
+            ),
+        };
+
+        self.transform(rhs)
+            .zip(strong_meta(meta.t, meta.span))
+            .zip(name)
+            .map(|((rhs, sm), name)| {
+                (
+                    Definition { name, rhs },
+                    StrongMetadata {
+                        t: sm.t,
+                        span: meta.span,
+                    },
+                )
             })
     }
 
     fn transform_return(
         &mut self,
-        rtn: ast::Return<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        self.transform(rtn.expression)
-            .map(|expression| SymbolicExpression {
-                expression: Expression::new_return(expression),
+        Return { expression }: Return<Self::From>,
+        meta: PartialMetadata,
+    ) -> Results<(Return<Self::To>, Self::To), Self::Error> {
+        self.transform(expression)
+            .zip(strong_meta(meta.t, meta.span))
+            .map(|(expression, sm)| {
+                (
+                    Return { expression },
+                    StrongMetadata {
+                        t: sm.t,
+                        span: meta.span,
+                    },
+                )
             })
     }
 
     fn transform_match(
         &mut self,
-        mtch: ast::Match<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        self.transform(mtch.value)
+        Match { value, conds }: Match<Self::From>,
+        meta: PartialMetadata,
+    ) -> Results<(Match<Self::To>, Self::To), Self::Error> {
+        self.transform(value)
             .zip(
-                mtch.conds
+                conds
                     .into_iter()
                     .map(|(cond, body)| self.transform(cond).zip(self.transform(body)))
                     .collect(),
             )
-            .map(|(value, conds)| SymbolicExpression {
-                expression: Expression::new_match(value, conds),
+            .zip(strong_meta(meta.t, meta.span))
+            .map(|((value, conds), sm)| {
+                (
+                    Match { value, conds },
+                    StrongMetadata {
+                        t: sm.t,
+                        span: meta.span,
+                    },
+                )
             })
     }
 
     fn transform_ident(
         &mut self,
-        ident: Ident<Self::From>,
-
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        match self
-            .scopes
-            .iter()
-            .rev()
-            .filter_map(|scope| scope.get(&ident.value))
-            .next()
-        {
-            Some(value) => Results::ok(Some(value.clone())),
-            None => Results::with_error(
-                None,
-                SymbolicError::Undefined { name: ident.value }.with_span(span),
-            ),
-        }
-        .map(|symbol| SymbolicExpression {
-            expression: Expression::new_ident(symbol),
-        })
+        ident: ast::Ident<Self::From>,
+        meta: PartialMetadata,
+    ) -> Results<(ast::Ident<Self::To>, Self::To), Self::Error> {
+        Results::ok((
+            ast::Ident {
+                value: ident.value.unwrap(),
+            },
+            StrongMetadata {
+                t: meta.t.unwrap(),
+                span: meta.span,
+            },
+        ))
     }
 
     fn transform_number(
         &mut self,
         number: NumberLiteral,
-
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        Results::ok(number).map(|number| SymbolicExpression {
-            expression: Expression::Number(number),
-        })
+        meta: PartialMetadata,
+    ) -> Results<(NumberLiteral, Self::To), Self::Error> {
+        strong_meta(meta.t, meta.span).map(|sm| (number, sm))
     }
 
     fn transform_string(
         &mut self,
         string: StringLiteral,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        Results::ok(string).map(|string| SymbolicExpression {
-            expression: Expression::String(string),
-        })
+        meta: PartialMetadata,
+    ) -> Results<(StringLiteral, Self::To), Self::Error> {
+        strong_meta(meta.t, meta.span).map(|sm| (string, sm))
     }
 
     fn transform_boolean(
         &mut self,
         boolean: BooleanLiteral,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        Results::ok(boolean).map(|boolean| SymbolicExpression {
-            expression: Expression::Boolean(boolean),
-        })
+        meta: PartialMetadata,
+    ) -> Results<(BooleanLiteral, Self::To), Self::Error> {
+        strong_meta(meta.t, meta.span).map(|sm| (boolean, sm))
     }
 
     fn transform_array(
         &mut self,
-        array: Array<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        array: ast::Array<Self::From>,
+        meta: PartialMetadata,
+    ) -> Results<(ast::Array<Self::To>, Self::To), Self::Error> {
         array
             .items
             .into_iter()
             .map(|e| self.transform(e))
             .collect::<Results<Vec<_>, _>>()
-            .map(|array| SymbolicExpression {
-                expression: Expression::new_array(array),
-            })
+            .zip(strong_meta(meta.t, meta.span))
+            .map(|(items, sm)| (ast::Array { items }, sm))
     }
 
     fn transform_object(
         &mut self,
-        object: Object<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        object
-            .fields
+        Object { fields }: Object<Self::From>,
+        meta: PartialMetadata,
+    ) -> Results<(Object<Self::To>, Self::To), Self::Error> {
+        fields
             .into_iter()
             .map(|(name, e)| self.transform(e).map(|v| (name, v)))
             .collect::<Results<BTreeMap<_, _>, _>>()
-            .map(|fields| SymbolicExpression {
-                expression: Expression::new_object(fields),
-            })
+            .zip(strong_meta(meta.t, meta.span))
+            .map(|(fields, sm)| (Object { fields }, sm))
     }
 
     fn transform_lambda(
         &mut self,
-        lambda: Lambda<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        self.scopes.push(Default::default());
-
+        lambda: Lambda<Self::From>,
+        meta: PartialMetadata,
+    ) -> Results<(Lambda<Self::To>, Self::To), Self::Error> {
         let params = lambda
             .params
             .into_iter()
-            .map(|(name, ty)| {
-                let symbol = self.next_symbol(name.clone());
-                self.scopes.last_mut().unwrap().insert(name, symbol.clone());
-                (Some(symbol), ty)
-            })
+            .map(|(name, ty)| (name.unwrap(), ty.unwrap()))
             .collect();
 
         let body = lambda
@@ -184,76 +227,84 @@ impl AstTransform for ExpressionStripper {
             .map(|e| self.transform(e))
             .collect::<Results<Vec<_>, _>>();
 
-        self.scopes.pop();
-
-        body.map(|body| SymbolicExpression {
-            expression: Expression::new_lambda(params, body),
-        })
+        body.zip(strong_meta(meta.t, meta.span))
+            .map(|(body, sm)| (Lambda { params, body }, sm))
     }
 
     fn transform_unary_op(
         &mut self,
-        unary_operation: UnaryOperation<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        unary_operation: UnaryOperation<Self::From>,
+        meta: PartialMetadata,
+    ) -> Results<(UnaryOperation<Self::To>, Self::To), Self::Error> {
         self.transform(unary_operation.arg)
-            .map(|arg| SymbolicExpression {
-                expression: Expression::new_unary_operation(arg, unary_operation.op),
+            .zip(strong_meta(meta.t, meta.span))
+            .flat_map(|(arg, sm)| {
+                let Some(op) = unary_operation.op else {
+                    return Results::with_error(
+                        (
+                            UnaryOperation {
+                                arg,
+                                op: TypedUnaryOperator::NegateNumber,
+                            },
+                            sm,
+                        ),
+                        CleanError::UnresolvedOperator.with_span(meta.span),
+                    );
+                };
+
+                Results::ok((UnaryOperation { arg, op }, sm))
             })
     }
 
     fn transform_binary_op(
         &mut self,
-        binary_operation: BinaryOperation<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        binary_operation: BinaryOperation<Self::From>,
+        meta: PartialMetadata,
+    ) -> Results<(BinaryOperation<Self::To>, Self::To), Self::Error> {
         self.transform(binary_operation.lhs)
             .zip(self.transform(binary_operation.rhs))
-            .map(|(lhs, rhs)| SymbolicExpression {
-                expression: Expression::new_binary_operation(lhs, rhs, binary_operation.op),
+            .zip(strong_meta(meta.t, meta.span))
+            .flat_map(|((lhs, rhs), sm)| {
+                let Some(op) = binary_operation.op else {
+                    return Results::with_error(
+                        (
+                            BinaryOperation {
+                                lhs,
+                                rhs,
+                                op: TypedBinaryOperator::AddNumbers,
+                            },
+                            sm,
+                        ),
+                        CleanError::UnresolvedOperator.with_span(meta.span),
+                    );
+                };
+
+                Results::ok((BinaryOperation { lhs, rhs, op }, sm))
             })
     }
 
     fn transform_call(
         &mut self,
-        call: Call<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        self.transform(call.expression)
+        Call { expression, args }: Call<Self::From>,
+        meta: PartialMetadata,
+    ) -> Results<(Call<Self::To>, Self::To), Self::Error> {
+        self.transform(expression)
             .zip(
-                call.args
-                    .into_iter()
-                    .map(|(name, e)| {
-                        match self
-                            .scopes
-                            .iter()
-                            .rev()
-                            .filter_map(|scope| scope.get(&name))
-                            .next()
-                        {
-                            Some(value) => Results::ok(Some(value.clone())),
-                            None => Results::with_error(
-                                None,
-                                SymbolicError::Undefined { name }.with_span(span),
-                            ),
-                        }
-                        .zip(self.transform(e))
-                    })
-                    .collect(),
+                args.into_iter()
+                    .map(|(name, e)| self.transform(e).map(|v| (name, v)))
+                    .collect::<Results<BTreeMap<_, _>, _>>(),
             )
-            .map(|(expression, args)| SymbolicExpression {
-                expression: Expression::new_call(expression, args),
-            })
+            .zip(strong_meta(meta.t, meta.span))
+            .map(|((expression, args), sm)| (Call { expression, args }, sm))
     }
 
     fn transform_object_access(
         &mut self,
-        object_access: ObjectAccess<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        self.transform(object_access.expression)
-            .map(|expression| SymbolicExpression {
-                expression: Expression::new_object_access(expression, object_access.field),
-            })
+        ObjectAccess { expression, field }: ObjectAccess<Self::From>,
+        meta: PartialMetadata,
+    ) -> Results<(ObjectAccess<Self::To>, Self::To), Self::Error> {
+        self.transform(expression)
+            .zip(strong_meta(meta.t, meta.span))
+            .map(|(expression, sm)| (ObjectAccess { expression, field }, sm))
     }
 }

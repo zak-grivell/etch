@@ -79,6 +79,9 @@ pub enum Symbols {
     Colon,
     #[strum(serialize = "=")]
     Equals,
+
+    #[strum(serialize = "@")]
+    At,
 }
 
 impl fmt::Display for Symbols {

@@ -2,29 +2,28 @@ use std::{collections::BTreeMap, fmt::Display};
 
 use ast::{
     Array, Ast, AstNode, AstTransform, BinaryOperation, BinaryOperator, BooleanLiteral, Call,
-    Definition, Expression, Ident, Lambda, NumberLiteral, Object, ObjectAccess, PartialType,
-    Results, Span, StringLiteral, Symbol, UnaryOperation, UnaryOperator,
+    Definition, Ident, Lambda, NumberLiteral, Object, ObjectAccess, PartialType, Results, Span,
+    StringLiteral, Symbol, UnaryOperation, UnaryOperator,
 };
-use chumsky::span::{SpanWrap, Spanned};
+use chumsky::{
+    error::Rich,
+    span::{SpanWrap, Spanned},
+};
 
-use crate::parser::ParsedExpression;
+use crate::{lexer::Token, parser::ParsedMetadata};
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct SymbolicExpression {
-    pub expression: Expression<SymbolicExpression>,
+pub struct SymbolMetadata {
+    pub span: Span,
 }
 
-impl Ast for SymbolicExpression {
+impl Ast for SymbolMetadata {
     type E = AstNode<Self>;
     type I = Option<Symbol>;
     type T = PartialType;
 
     type B = BinaryOperator;
     type U = UnaryOperator;
-
-    fn expression(self) -> Expression<Self> {
-        self.expression
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +36,12 @@ impl Display for SymbolicError {
         match self {
             SymbolicError::Undefined { name } => write!(f, "{} is not defined", name),
         }
+    }
+}
+
+impl SymbolicError {
+    pub fn into_rich<'src>(self, span: Span) -> Rich<'src, String, Span> {
+        Rich::custom(span, format!("{self}"))
     }
 }
 
@@ -67,14 +72,14 @@ impl SymbolResolver {
 
 impl AstTransform for SymbolResolver {
     type Error = Spanned<SymbolicError>;
-    type From = ParsedExpression;
-    type To = SymbolicExpression;
+    type From = ParsedMetadata;
+    type To = SymbolMetadata;
 
     fn transform_definition(
         &mut self,
         definition: Definition<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        meta: ParsedMetadata,
+    ) -> Results<(Definition<Self::To>, Self::To), Self::Error> {
         let symbol = self.next_symbol(definition.name.clone());
 
         self.scopes
@@ -82,28 +87,35 @@ impl AstTransform for SymbolResolver {
             .unwrap()
             .insert(definition.name, symbol.clone());
 
-        self.transform(definition.rhs)
-            .map(|rhs| SymbolicExpression {
-                expression: Expression::new_definition(Some(symbol), rhs),
-            })
+        self.transform(definition.rhs).map(|rhs| {
+            (
+                Definition {
+                    name: Some(symbol),
+                    rhs,
+                },
+                SymbolMetadata { span: meta.span },
+            )
+        })
     }
 
     fn transform_return(
         &mut self,
-        rtn: ast::Return<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        self.transform(rtn.expression)
-            .map(|expression| SymbolicExpression {
-                expression: Expression::new_return(expression),
-            })
+        rtn: ast::Return<ParsedMetadata>,
+        meta: ParsedMetadata,
+    ) -> Results<(ast::Return<Self::To>, Self::To), Self::Error> {
+        self.transform(rtn.expression).map(|expression| {
+            (
+                ast::Return { expression },
+                SymbolMetadata { span: meta.span },
+            )
+        })
     }
 
     fn transform_match(
         &mut self,
-        mtch: ast::Match<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        mtch: ast::Match<ParsedMetadata>,
+        meta: ParsedMetadata,
+    ) -> Results<(ast::Match<Self::To>, Self::To), Self::Error> {
         self.transform(mtch.value)
             .zip(
                 mtch.conds
@@ -111,17 +123,19 @@ impl AstTransform for SymbolResolver {
                     .map(|(cond, body)| self.transform(cond).zip(self.transform(body)))
                     .collect(),
             )
-            .map(|(value, conds)| SymbolicExpression {
-                expression: Expression::new_match(value, conds),
+            .map(|(value, conds)| {
+                (
+                    ast::Match { value, conds },
+                    SymbolMetadata { span: meta.span },
+                )
             })
     }
 
     fn transform_ident(
         &mut self,
         ident: Ident<Self::From>,
-
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        meta: ParsedMetadata,
+    ) -> Results<(Ident<Self::To>, Self::To), Self::Error> {
         match self
             .scopes
             .iter()
@@ -129,83 +143,74 @@ impl AstTransform for SymbolResolver {
             .filter_map(|scope| scope.get(&ident.value))
             .next()
         {
-            Some(value) => Results::ok(Some(value.clone())),
+            Some(value) => Results::ok((
+                Ident {
+                    value: Some(value.clone()),
+                },
+                SymbolMetadata { span: meta.span },
+            )),
             None => Results::with_error(
-                None,
-                SymbolicError::Undefined { name: ident.value }.with_span(span),
+                (Ident { value: None }, SymbolMetadata { span: meta.span }),
+                SymbolicError::Undefined { name: ident.value }.with_span(meta.span),
             ),
         }
-        .map(|symbol| SymbolicExpression {
-            expression: Expression::new_ident(symbol),
-        })
     }
 
     fn transform_number(
         &mut self,
         number: NumberLiteral,
-
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        Results::ok(number).map(|number| SymbolicExpression {
-            expression: Expression::Number(number),
-        })
+        meta: ParsedMetadata,
+    ) -> Results<(NumberLiteral, Self::To), Self::Error> {
+        Results::ok((number, SymbolMetadata { span: meta.span }))
     }
 
     fn transform_string(
         &mut self,
         string: StringLiteral,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        Results::ok(string).map(|string| SymbolicExpression {
-            expression: Expression::String(string),
-        })
+        meta: ParsedMetadata,
+    ) -> Results<(StringLiteral, Self::To), Self::Error> {
+        Results::ok((string, SymbolMetadata { span: meta.span }))
     }
 
     fn transform_boolean(
         &mut self,
         boolean: BooleanLiteral,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        Results::ok(boolean).map(|boolean| SymbolicExpression {
-            expression: Expression::Boolean(boolean),
-        })
+        meta: ParsedMetadata,
+    ) -> Results<(BooleanLiteral, Self::To), Self::Error> {
+        Results::ok((boolean, SymbolMetadata { span: meta.span }))
     }
 
     fn transform_array(
         &mut self,
         array: Array<Self::From>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        meta: ParsedMetadata,
+    ) -> Results<(Array<Self::To>, Self::To), Self::Error> {
         array
             .items
             .into_iter()
             .map(|e| self.transform(e))
             .collect::<Results<Vec<_>, _>>()
-            .map(|array| SymbolicExpression {
-                expression: Expression::new_array(array),
-            })
+            .map(|items| (Array { items }, SymbolMetadata { span: meta.span }))
     }
 
     fn transform_object(
         &mut self,
-        object: Object<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        object: Object<ParsedMetadata>,
+        meta: ParsedMetadata,
+    ) -> Results<(Object<Self::To>, Self::To), Self::Error> {
         object
             .fields
             .into_iter()
             .map(|(name, e)| self.transform(e).map(|v| (name, v)))
             .collect::<Results<BTreeMap<_, _>, _>>()
-            .map(|fields| SymbolicExpression {
-                expression: Expression::new_object(fields),
-            })
+            .map(|fields| (Object { fields }, SymbolMetadata { span: meta.span }))
     }
 
     fn transform_lambda(
         &mut self,
-        lambda: Lambda<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        lambda: Lambda<ParsedMetadata>,
+        meta: ParsedMetadata,
+    ) -> Results<(Lambda<Self::To>, Self::To), Self::Error> {
         self.scopes.push(Default::default());
 
         let params = lambda
@@ -226,74 +231,77 @@ impl AstTransform for SymbolResolver {
 
         self.scopes.pop();
 
-        body.map(|body| SymbolicExpression {
-            expression: Expression::new_lambda(params, body),
-        })
+        body.map(|body| (Lambda { params, body }, SymbolMetadata { span: meta.span }))
     }
 
     fn transform_unary_op(
         &mut self,
-        unary_operation: UnaryOperation<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        self.transform(unary_operation.arg)
-            .map(|arg| SymbolicExpression {
-                expression: Expression::new_unary_operation(arg, unary_operation.op),
-            })
+        unary_operation: UnaryOperation<ParsedMetadata>,
+        meta: ParsedMetadata,
+    ) -> Results<(UnaryOperation<Self::To>, Self::To), Self::Error> {
+        self.transform(unary_operation.arg).map(|arg| {
+            (
+                UnaryOperation {
+                    arg,
+                    op: unary_operation.op,
+                },
+                SymbolMetadata { span: meta.span },
+            )
+        })
     }
 
     fn transform_binary_op(
         &mut self,
-        binary_operation: BinaryOperation<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        binary_operation: BinaryOperation<ParsedMetadata>,
+        meta: ParsedMetadata,
+    ) -> Results<(BinaryOperation<Self::To>, Self::To), Self::Error> {
         self.transform(binary_operation.lhs)
             .zip(self.transform(binary_operation.rhs))
-            .map(|(lhs, rhs)| SymbolicExpression {
-                expression: Expression::new_binary_operation(lhs, rhs, binary_operation.op),
+            .map(|(lhs, rhs)| {
+                (
+                    BinaryOperation {
+                        lhs,
+                        rhs,
+                        op: binary_operation.op,
+                    },
+                    SymbolMetadata { span: meta.span },
+                )
             })
     }
 
     fn transform_call(
         &mut self,
-        call: Call<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
+        call: Call<ParsedMetadata>,
+        meta: ParsedMetadata,
+    ) -> Results<(Call<Self::To>, Self::To), Self::Error> {
         self.transform(call.expression)
             .zip(
                 call.args
                     .into_iter()
-                    .map(|(name, e)| {
-                        match self
-                            .scopes
-                            .iter()
-                            .rev()
-                            .filter_map(|scope| scope.get(&name))
-                            .next()
-                        {
-                            Some(value) => Results::ok(Some(value.clone())),
-                            None => Results::with_error(
-                                None,
-                                SymbolicError::Undefined { name }.with_span(span),
-                            ),
-                        }
-                        .zip(self.transform(e))
-                    })
+                    .map(|(name, e)| self.transform(e).map(|expr| (name, expr)))
                     .collect(),
             )
-            .map(|(expression, args)| SymbolicExpression {
-                expression: Expression::new_call(expression, args),
+            .map(|(expression, args)| {
+                (
+                    Call { expression, args },
+                    SymbolMetadata { span: meta.span },
+                )
             })
     }
 
     fn transform_object_access(
         &mut self,
-        object_access: ObjectAccess<ParsedExpression>,
-        span: Span,
-    ) -> Results<Self::To, Self::Error> {
-        self.transform(object_access.expression)
-            .map(|expression| SymbolicExpression {
-                expression: Expression::new_object_access(expression, object_access.field),
-            })
+        object_access: ObjectAccess<ParsedMetadata>,
+        meta: ParsedMetadata,
+    ) -> Results<(ObjectAccess<Self::To>, Self::To), Self::Error> {
+        self.transform(object_access.expression).map(|expression| {
+            (
+                ObjectAccess {
+                    expression,
+                    field: object_access.field,
+                },
+                SymbolMetadata { span: meta.span },
+            )
+        })
     }
 }
