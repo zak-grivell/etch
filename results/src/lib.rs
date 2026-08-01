@@ -1,5 +1,3 @@
-use std::collections::BTreeMap;
-
 pub struct Results<T, E> {
     value: T,
     errors: Vec<E>,
@@ -52,36 +50,22 @@ impl<T, E> Results<T, E> {
         }
     }
 }
-impl<T, E> FromIterator<Results<T, E>> for Results<Vec<T>, E> {
+
+impl<C, T, E> FromIterator<Results<T, E>> for Results<C, E>
+where
+    C: Default + Extend<T>,
+{
     fn from_iter<I: IntoIterator<Item = Results<T, E>>>(iter: I) -> Self {
-        let mut values = Vec::new();
+        let mut collection = C::default();
         let mut errors = Vec::new();
 
-        for result in iter {
-            values.push(result.value);
-            errors.extend(result.errors);
+        for item in iter {
+            collection.extend(std::iter::once(item.value));
+            errors.extend(item.errors);
         }
 
         Results {
-            value: values,
-            errors,
-        }
-    }
-}
-
-impl<K: Ord + Eq, V, E> FromIterator<Results<(K, V), E>> for Results<BTreeMap<K, V>, E> {
-    fn from_iter<I: IntoIterator<Item = Results<(K, V), E>>>(iter: I) -> Self {
-        let mut values = BTreeMap::new();
-        let mut errors = Vec::new();
-
-        for result in iter {
-            let (k, v) = result.value;
-            values.insert(k, v);
-            errors.extend(result.errors);
-        }
-
-        Results {
-            value: values,
+            value: collection,
             errors,
         }
     }

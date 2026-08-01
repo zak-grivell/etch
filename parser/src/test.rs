@@ -8,7 +8,7 @@ pub fn test() {
 
     let input = read_to_string("../examples/main.etch").unwrap();
 
-    let compile_result = compile(filename, &input);
+    let compile_result = compile(&input);
 
     match compile_result {
         Ok(result) => println!("{:?}", result),

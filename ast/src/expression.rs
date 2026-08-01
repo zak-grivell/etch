@@ -1,86 +1,62 @@
-use crate::ast::Ast;
 use derive_more::From;
+
+use crate::Type;
+use crate::ast::Ast;
+use crate::primative::Primative;
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Display};
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct Definition<A: Ast> {
-    pub name: A::I,
-    pub rhs: A::E,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Return<A: Ast> {
-    pub expression: A::E,
+pub struct MatchArm<A: Ast> {
+    pub pattern: Option<A::Pattern>,
+    pub condition: Option<A::Expression>,
+    pub result: Box<A::Expression>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Match<A: Ast> {
-    pub value: A::E,
-    pub conds: Vec<(A::E, A::E)>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct NumberLiteral {
-    pub value: f64,
-    pub unit: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct StringLiteral {
-    pub value: String,
+    pub on: Box<A::Expression>,
+    pub arms: Vec<MatchArm<A>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Object<A: Ast> {
-    pub fields: BTreeMap<String, A::E>,
+    pub fields: BTreeMap<String, A::Expression>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lambda<A: Ast> {
-    pub params: BTreeMap<A::I, A::T>,
-    pub body: Vec<A::E>,
+    pub params: BTreeMap<A::Ident, Type<A>>,
+    pub body: Vec<Expression<A>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Call<A: Ast> {
-    pub expression: A::E,
-    pub args: BTreeMap<String, A::E>,
+    pub expression: A::Expression,
+    pub args: BTreeMap<String, A::Expression>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectAccess<A: Ast> {
-    pub expression: A::E,
+    pub expression: A::Expression,
     pub field: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnaryOperation<A: Ast> {
-    pub arg: A::E,
+    pub arg: A::Expression,
     pub op: A::U,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BinaryOperation<A: Ast> {
-    pub lhs: A::E,
-    pub rhs: A::E,
+    pub lhs: A::Expression,
+    pub rhs: A::Expression,
     pub op: A::B,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct BooleanLiteral {
-    pub value: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Ident<A: Ast> {
-    pub value: A::I,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct Node {
-    id: u32,
-}
+pub struct Node;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum BinaryOperator {
@@ -122,85 +98,32 @@ impl Display for UnaryOperator {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Array<A: Ast> {
-    pub items: Vec<A::E>,
+    pub items: Vec<A::Expression>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ident<A: Ast> {
+    pub ident: A::Ident,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Block<A: Ast> {
+    pub body: Vec<A::Statement>,
 }
 
 #[derive(Debug, PartialEq, Clone, From)]
-pub enum Expression<A: Ast + PartialEq + Clone + Debug> {
-    Definition(Definition<A>),
-
-    Return(Return<A>),
+pub enum Expression<A: Ast> {
     Match(Match<A>),
-
     Ident(Ident<A>),
-    Number(NumberLiteral),
-    String(StringLiteral),
-    Boolean(BooleanLiteral),
+    Primative(Primative),
     Array(Array<A>),
     Object(Object<A>),
     Lambda(Lambda<A>),
 
+    Node(Node),
     UnaryOperation(UnaryOperation<A>),
     BinaryOperation(BinaryOperation<A>),
-
     Call(Call<A>),
     ObjectAccess(ObjectAccess<A>),
-}
-
-impl<A: Ast> Expression<A> {
-    pub fn new_definition(name: A::I, rhs: A::E) -> Self {
-        Self::Definition(Definition { name, rhs })
-    }
-
-    pub fn new_return(expression: A::E) -> Self {
-        Self::Return(Return { expression })
-    }
-
-    pub fn new_match(value: A::E, conds: Vec<(A::E, A::E)>) -> Self {
-        Self::Match(Match { value, conds })
-    }
-
-    pub fn new_ident(ident: A::I) -> Self {
-        Self::Ident(Ident { value: ident })
-    }
-
-    pub fn new_number(value: f64, unit: Option<String>) -> Self {
-        Self::Number(NumberLiteral { value, unit })
-    }
-
-    pub fn new_string(value: String) -> Self {
-        Self::String(StringLiteral { value })
-    }
-
-    pub fn new_boolean(value: bool) -> Self {
-        Self::Boolean(BooleanLiteral { value })
-    }
-
-    pub fn new_array(elements: Vec<A::E>) -> Self {
-        Self::Array(Array { items: elements })
-    }
-
-    pub fn new_object(fields: BTreeMap<String, A::E>) -> Self {
-        Self::Object(Object { fields })
-    }
-
-    pub fn new_lambda(params: BTreeMap<A::I, A::T>, body: Vec<A::E>) -> Self {
-        Self::Lambda(Lambda { params, body })
-    }
-
-    pub fn new_unary_operation(arg: A::E, op: A::U) -> Self {
-        Self::UnaryOperation(UnaryOperation { arg, op })
-    }
-
-    pub fn new_binary_operation(lhs: A::E, rhs: A::E, op: A::B) -> Self {
-        Self::BinaryOperation(BinaryOperation { lhs, rhs, op })
-    }
-
-    pub fn new_call(expression: A::E, args: BTreeMap<String, A::E>) -> Self {
-        Self::Call(Call { expression, args })
-    }
-
-    pub fn new_object_access(expression: A::E, field: String) -> Self {
-        Self::ObjectAccess(ObjectAccess { expression, field })
-    }
+    Block(Block<A>),
 }

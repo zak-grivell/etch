@@ -21,7 +21,7 @@ fn main() {
 
     let input = read_to_string(args.file_path).expect("could not find file");
 
-    let output = match compile(&filename, &input) {
+    let output = match compile(&input) {
         Ok(result) => result,
         Err(errors) => {
             print_errors(&filename, &input, errors);

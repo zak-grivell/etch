@@ -1,3 +1,5 @@
+#![allow(unused_imports)]
+
 mod parser;
 
 #[macro_use]
@@ -11,23 +13,23 @@ pub(crate) mod semantic;
 mod test;
 
 use ariadne::{Color, Label, Report, ReportKind, sources};
-use ast::{AstNode, AstTransform};
+use ast::{AstNode, AstTransform, NoneType};
 use chumsky::Parser as _;
 use chumsky::error::Rich;
 use chumsky::input::IterInput;
 use chumsky::span::{SimpleSpan, Span, Spanned};
 
-use crate::cleaner::{CleanError, StrongMetadata};
 use crate::lexer::Token;
-use crate::resolver::{SymbolResolver, SymbolicError};
-use crate::semantic::{SemanticError, TypeResolver};
+// use crate::resolver::{SymbolResolver, SymbolicError};
+// use crate::cleaner::{StrongMetadata, UnresolvedError};
+// use crate::semantic::{SemanticError, TypeResolver};
 
 pub enum CompileErrors<'src> {
     LexerError(Rich<'src, char, SimpleSpan>),
     ParserError(Rich<'src, Token<'src>, SimpleSpan>),
-    ResolverError(Spanned<SymbolicError>),
-    SemanticError(Spanned<SemanticError>),
-    CleanerError(Spanned<CleanError>),
+    // ResolverError(Spanned<SymbolicError>),
+    // SemanticError(Spanned<SemanticError>),
+    // CleanerError(Spanned<UnresolvedError>),
 }
 
 impl<'src> CompileErrors<'src> {
@@ -35,94 +37,89 @@ impl<'src> CompileErrors<'src> {
         match self {
             Self::LexerError(_) => String::from("lexer"),
             Self::ParserError(_) => String::from("parser"),
-            Self::ResolverError(_) => String::from("symbol resolver"),
-            Self::SemanticError(_) => String::from("type checking"),
-            Self::CleanerError(_) => String::from("cleaner"),
+            // Self::ResolverError(_) => String::from("symbol resolver"),
+            // Self::SemanticError(_) => String::from("type checking"),
+            // Self::CleanerError(_) => String::from("cleaner"),
         }
     }
 
-    fn as_rich(self) -> Rich<'src, String, SimpleSpan> {
+    fn into_rich(self) -> Rich<'src, String, SimpleSpan> {
         match self {
             Self::LexerError(e) => e.map_token(|v| v.to_string()),
             Self::ParserError(e) => e.map_token(|v| v.to_string()),
-            Self::ResolverError(e) => e.inner.into_rich(e.span),
-            Self::SemanticError(e) => e.inner.into_rich(e.span),
-            Self::CleanerError(e) => e.inner.into_rich(e.span),
+            // Self::ResolverError(e) => e.inner.into_rich(e.span),
+            // Self::SemanticError(e) => e.inner.into_rich(e.span),
+            // Self::CleanerError(e) => e.inner.into_rich(e.span),
         }
     }
 }
 
-pub fn compile<'a>(
-    filename: &str,
-    input: &'a str,
-) -> Result<Vec<AstNode<StrongMetadata>>, Vec<CompileErrors<'a>>> {
+pub fn compile<'a>(input: &'a str) -> Result<Vec<NoneType>, Vec<CompileErrors<'a>>> {
     let (tokens, errors) = lexer::lexer().parse(input).into_output_errors();
 
-    let lexer_errors = errors
-        .into_iter()
-        .map(|err| CompileErrors::LexerError(err))
-        .collect();
+    let lexer_errors = errors.into_iter().map(CompileErrors::LexerError).collect();
 
     let Some(tokens) = tokens else {
         return Err(lexer_errors);
     };
 
-    let eof = Span::new((), input.len()..input.len());
+    dbg!(tokens);
 
-    let (parsed, errors) = parser::parse()
-        .parse(IterInput::new(
-            tokens
-                .clone()
-                .into_iter()
-                .map(|t| (t.inner.clone(), t.span)),
-            eof,
-        ))
-        .into_output_errors();
+    // let eof = Span::new((), input.len()..input.len());
 
-    let parser_errors: Vec<_> = errors
-        .into_iter()
-        .map(|err| CompileErrors::ParserError(err))
-        .collect();
+    todo!();
 
-    let Some(parsed) = parsed else {
-        return Err(parser_errors.into_iter().chain(lexer_errors).collect());
-    };
+    // let (parsed, errors) = parser::parse()
+    //     .parse(IterInput::new(
+    //         tokens
+    //             .clone()
+    //             .into_iter()
+    //             .map(|t| (t.inner.clone(), t.span)),
+    //         eof,
+    //     ))
+    //     .into_output_errors();
 
-    let (resolved, resolver_errors) = SymbolResolver::new().transform_all(parsed).into_parts();
+    // let parser_errors: Vec<_> = errors.into_iter().map(CompileErrors::ParserError).collect();
 
-    let resolver_errors = resolver_errors
-        .into_iter()
-        .map(|err| CompileErrors::ResolverError(err))
-        .collect::<Vec<_>>();
+    // let Some(parsed) = parsed else {
+    //     return Err(parser_errors.into_iter().chain(lexer_errors).collect());
+    // };
 
-    let (typed_tree, type_errors) = TypeResolver::new().transform_all(resolved).into_parts();
+    // let (resolved, resolver_errors) = SymbolResolver::new().transform_all(parsed).into_parts();
 
-    let type_errors = type_errors
-        .into_iter()
-        .map(|err| CompileErrors::SemanticError(err))
-        .collect::<Vec<_>>();
+    // let resolver_errors = resolver_errors
+    //     .into_iter()
+    //     .map(CompileErrors::ResolverError)
+    //     .collect::<Vec<_>>();
 
-    let errors = [lexer_errors, parser_errors, resolver_errors, type_errors]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
+    // let (typed_tree, type_errors) = TypeResolver::new().transform_all(resolved).into_parts();
 
-    if !errors.is_empty() {
-        return Err(errors);
-    }
+    // let type_errors = type_errors
+    //     .into_iter()
+    //     .map(CompileErrors::SemanticError)
+    //     .collect::<Vec<_>>();
 
-    let (strong, errors) = cleaner::ExpressionStripper
-        .transform_all(typed_tree)
-        .into_parts();
+    // let errors = [lexer_errors, parser_errors, resolver_errors, type_errors]
+    //     .into_iter()
+    //     .flatten()
+    //     .collect::<Vec<_>>();
 
-    if !errors.is_empty() {
-        return Err(errors
-            .into_iter()
-            .map(|v| CompileErrors::CleanerError(v))
-            .collect());
-    }
+    // if !errors.is_empty() {
+    //     return Err(errors);
+    // }
 
-    Ok(strong)
+    // let (strong, errors) = cleaner::ExpressionStripper
+    //     .transform_all(typed_tree)
+    //     .into_parts();
+
+    // if !errors.is_empty() {
+    //     return Err(errors
+    //         .into_iter()
+    //         .map(CompileErrors::CleanerError)
+    //         .collect());
+    // }
+
+    // Ok(strong)
 }
 
 pub fn print_errors(filename: &str, src: &str, errors: Vec<CompileErrors>) {
@@ -130,7 +127,7 @@ pub fn print_errors(filename: &str, src: &str, errors: Vec<CompileErrors>) {
 
     for err in errors {
         let stage = err.stage();
-        let err = err.as_rich();
+        let err = err.into_rich();
         let span = err.span().into_range();
 
         Report::build(ReportKind::Error, (filename.clone(), span.clone()))

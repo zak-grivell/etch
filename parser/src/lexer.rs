@@ -27,6 +27,12 @@ pub enum Keyword {
     Match,
     #[strum(serialize = "type")]
     Type,
+
+    #[strum(serialize = "from")]
+    From,
+
+    #[strum(serialize = "import")]
+    Import,
 }
 
 #[derive(Clone, Debug, PartialEq, EnumString, EnumIter, AsRefStr)]
