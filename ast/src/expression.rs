@@ -9,7 +9,7 @@ use std::fmt::{Debug, Display};
 #[derive(Clone, Debug, PartialEq)]
 pub struct MatchArm<A: Ast> {
     pub pattern: Option<A::Pattern>,
-    pub condition: Option<A::Expression>,
+    pub condition: Option<Box<A::Expression>>,
     pub result: Box<A::Expression>,
 }
 
@@ -27,31 +27,31 @@ pub struct Object<A: Ast> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Lambda<A: Ast> {
     pub params: BTreeMap<A::Ident, Type<A>>,
-    pub body: Vec<Expression<A>>,
+    pub body: Box<A::Expression>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Call<A: Ast> {
-    pub expression: A::Expression,
+    pub expression: Box<A::Expression>,
     pub args: BTreeMap<String, A::Expression>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectAccess<A: Ast> {
-    pub expression: A::Expression,
+    pub expression: Box<A::Expression>,
     pub field: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnaryOperation<A: Ast> {
-    pub arg: A::Expression,
+    pub arg: Box<A::Expression>,
     pub op: A::U,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BinaryOperation<A: Ast> {
-    pub lhs: A::Expression,
-    pub rhs: A::Expression,
+    pub lhs: Box<A::Expression>,
+    pub rhs: Box<A::Expression>,
     pub op: A::B,
 }
 

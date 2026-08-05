@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 
 use derive_more::From;
@@ -30,7 +30,7 @@ pub struct LambdaType<A: Ast> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnionType<A: Ast> {
-    pub options: BTreeSet<A::Type>,
+    pub options: Vec<A::Type>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -59,6 +59,7 @@ pub enum Type<A: Ast> {
     Boolean(BooleanType),
     Object(ObjectType<A>),
     Array(ArrayType<A>),
+    Optional(OptionalType<A>),
     Lambda(LambdaType<A>),
     Union(UnionType<A>),
     Tuple(TupleType<A>),

@@ -1,729 +1,793 @@
-// use crate::resolver::SymbolMetadata;
-// use ast::{
-//     Ast, AstNode, AstTransform, BinaryOperation, BinaryOperator, Call, Definition, Expression,
-//     Lambda, Match, Object, ObjectAccess, PartialType, Results, Return, Span, Symbol, Type,
-//     UnaryOperation, UnaryOperator,
-// };
-// use chumsky::error::Rich;
-// use chumsky::span::{SpanWrap, Spanned};
-// use std::collections::{BTreeMap, BTreeSet};
-
-// #[derive(Debug, Clone, PartialEq)]
-// pub struct PartialMetadata {
-//     pub t: PartialType,
-//     pub span: Span,
-// }
-
-// impl Ast for PartialMetadata {
-//     type Expression = AstNode<Self>;
-//     type Type = PartialType;
-
-//     type Ident = Option<Symbol>;
-
-//     type U = Option<TypedUnaryOperator>;
-
-//     type B = Option<TypedBinaryOperator>;
-// }
-
-// #[derive(Debug, Clone, PartialEq)]
-// pub enum TypedUnaryOperator {
-//     FlipBool,
-//     NegateNumber,
-// }
-
-// #[derive(Debug, Clone, PartialEq)]
-// pub enum TypedBinaryOperator {
-//     AddNumbers,
-//     SubNumbers,
-//     DivNumbers,
-//     MultNumbers,
-
-//     WireNode,
-//     WireObject,
-// }
-
-// #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-// pub enum SemanticError {
-//     TypeMismatch {
-//         expected: PartialType,
-//         found: PartialType,
-//     },
-
-//     InvalidBinaryOperation {
-//         operator: BinaryOperator,
-//         left: PartialType,
-//         right: PartialType,
-//     },
-
-//     InvalidUrinaryOperation {
-//         operator: UnaryOperator,
-//         t: PartialType,
-//     },
-
-//     InvalidFieldAccess {
-//         object: PartialType,
-//         field: String,
-//     },
-
-//     ArgumentMissing {
-//         name: String,
-//         t: PartialType,
-//     },
-
-//     InvalidArgumentType {
-//         name: String,
-//         got: PartialType,
-//         expected: PartialType,
-//     },
-
-//     ExtraArgument {
-//         name: String,
-//     },
-// }
-// use std::fmt::{self, Display};
-
-// impl Display for SemanticError {
-//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-//         match self {
-//             SemanticError::TypeMismatch { expected, found } => {
-//                 write!(f, "expected type `{expected}`, but found `{found}`")
-//             }
-
-//             SemanticError::InvalidBinaryOperation {
-//                 operator,
-//                 left,
-//                 right,
-//             } => {
-//                 write!(
-//                     f,
-//                     "cannot apply binary operator `{operator}` to values of type `{left}` and `{right}`"
-//                 )
-//             }
-
-//             SemanticError::InvalidUrinaryOperation { operator, t } => {
-//                 write!(
-//                     f,
-//                     "cannot apply unary operator `{operator}` to value of type `{t}`"
-//                 )
-//             }
-
-//             SemanticError::InvalidFieldAccess { object, field } => {
-//                 write!(f, "type `{object}` has no field `{field}`")
-//             }
-
-//             SemanticError::ArgumentMissing { name, t } => {
-//                 write!(f, "missing required argument `{name}` of type `{t}`")
-//             }
-
-//             SemanticError::InvalidArgumentType {
-//                 name,
-//                 expected,
-//                 got,
-//             } => {
-//                 write!(
-//                     f,
-//                     "argument `{name}` has type `{got}`, but `{expected}` was expected"
-//                 )
-//             }
-
-//             SemanticError::ExtraArgument { name } => {
-//                 write!(f, "unexpected argument `{name}`")
-//             }
-//         }
-//     }
-// }
-
-// impl SemanticError {
-//     pub fn into_rich<'src>(self, span: Span) -> Rich<'src, String, Span> {
-//         Rich::custom(span, format!("{self}"))
-//     }
-// }
-
-// #[derive(Debug, Default)]
-// pub struct TypeResolver {
-//     types: BTreeMap<Symbol, PartialType>,
-// }
-
-// impl TypeResolver {
-//     pub fn new() -> TypeResolver {
-//         TypeResolver {
-//             types: BTreeMap::new(),
-//         }
-//     }
-// }
-
-// fn resolve_multiple_types(items: impl Iterator<Item = PartialType>) -> PartialType {
-//     let options = items.collect::<BTreeSet<_>>();
-
-//     match options.len() {
-//         0 => PartialType::T(Type::Void),
-//         1 => options.iter().next().unwrap().clone(),
-//         _ => PartialType::T(Type::Union { options }),
-//     }
-// }
-
-// impl AstTransform for TypeResolver {
-//     type Error = Spanned<SemanticError>;
-//     type From = SymbolMetadata;
-//     type To = PartialMetadata;
-
-//     fn transform_definition(
-//         &mut self,
-//         definition: Definition<Self::From>,
-//         meta: SymbolMetadata,
-//     ) -> Results<(Definition<Self::To>, Self::To), Self::Error> {
-//         let name = definition.name.clone().unwrap();
-//         self.transform(definition.rhs).map(|rhs| {
-//             let t = rhs.meta.t.clone();
-//             self.types.insert(name, t.clone());
-
-//             (
-//                 Definition {
-//                     name: definition.name,
-//                     rhs,
-//                 },
-//                 PartialMetadata { t, span: meta.span },
-//             )
-//         })
-//     }
-
-//     fn transform_return(
-//         &mut self,
-//         rtn: Return<Self::From>,
-//         meta: SymbolMetadata,
-//     ) -> Results<(Return<Self::To>, Self::To), Self::Error> {
-//         self.transform(rtn.expression).map(|expression| {
-//             (
-//                 Return { expression },
-//                 PartialMetadata {
-//                     t: PartialType::T(Type::Never),
-//                     span: meta.span,
-//                 },
-//             )
-//         })
-//     }
-
-//     fn transform_match(
-//         &mut self,
-//         mtch: Match<Self::From>,
-//         meta: SymbolMetadata,
-//     ) -> Results<(Match<Self::To>, Self::To), Self::Error> {
-//         let conds = mtch
-//             .arms
-//             .into_iter()
-//             .map(|(a, b)| self.transform(a).zip(self.transform(b)))
-//             .collect::<Results<Vec<_>, _>>();
-
-//         self.transform(mtch.on).zip(conds).map(|(value, conds)| {
-//             let t = PartialType::T(Type::Union {
-//                 options: conds.iter().map(|(_, v)| v.meta.t.clone()).collect(),
-//             });
-//             (
-//                 Match { on: value, arms: conds },
-//                 PartialMetadata { t, span: meta.span },
-//             )
-//         })
-//     }
-
-//     fn transform_ident(
-//         &mut self,
-//         ident: ast::Ident<Self::From>,
-//         meta: SymbolMetadata,
-//     ) -> Results<(ast::Ident<Self::To>, Self::To), Self::Error> {
-//         Results::ok((
-//             ast::Ident {
-//                 value: ident.value.clone(),
-//             },
-//             PartialMetadata {
-//                 t: if let Some(ident) = &ident.value {
-//                     self.types.get(ident).unwrap().clone()
-//                 } else {
-//                     PartialType::Unknown
-//                 },
-//                 span: meta.span,
-//             },
-//         ))
-//     }
-
-//     fn transform_number(
-//         &mut self,
-//         number: ast::NumberLiteral,
-//         meta: SymbolMetadata,
-//     ) -> Results<(ast::NumberLiteral, Self::To), Self::Error> {
-//         Results::ok((
-//             number,
-//             PartialMetadata {
-//                 t: PartialType::T(Type::Number),
-//                 span: meta.span,
-//             },
-//         ))
-//     }
-
-//     fn transform_string(
-//         &mut self,
-//         string: ast::StringLiteral,
-//         meta: SymbolMetadata,
-//     ) -> Results<(ast::StringLiteral, Self::To), Self::Error> {
-//         Results::ok((
-//             string,
-//             PartialMetadata {
-//                 t: PartialType::T(Type::String),
-//                 span: meta.span,
-//             },
-//         ))
-//     }
-
-//     fn transform_boolean(
-//         &mut self,
-//         boolean: ast::BooleanLiteral,
-//         meta: SymbolMetadata,
-//     ) -> Results<(ast::BooleanLiteral, Self::To), Self::Error> {
-//         Results::ok((
-//             boolean,
-//             PartialMetadata {
-//                 t: PartialType::T(Type::Boolean),
-//                 span: meta.span,
-//             },
-//         ))
-//     }
-
-//     fn transform_array(
-//         &mut self,
-//         array: ast::Array<Self::From>,
-//         meta: SymbolMetadata,
-//     ) -> Results<(ast::Array<Self::To>, Self::To), Self::Error> {
-//         let items = array
-//             .items
-//             .into_iter()
-//             .map(|e| self.transform(e))
-//             .collect::<Results<Vec<_>, _>>();
-
-//         items.map(|items| {
-//             let elem = items
-//                 .first()
-//                 .map(|e| e.meta.t.clone())
-//                 .unwrap_or(PartialType::Unknown);
-
-//             (
-//                 ast::Array { items },
-//                 PartialMetadata {
-//                     t: PartialType::T(Type::Array(Box::new(elem))),
-//                     span: meta.span,
-//                 },
-//             )
-//         })
-//     }
-
-//     fn transform_object(
-//         &mut self,
-//         Object { fields }: Object<Self::From>,
-//         meta: SymbolMetadata,
-//     ) -> Results<(Object<Self::To>, Self::To), Self::Error> {
-//         let fields = fields
-//             .into_iter()
-//             .map(|(k, v)| self.transform(v).map(|v| (k, v)))
-//             .collect::<Results<BTreeMap<_, _>, _>>();
-
-//         fields.map(|fields| {
-//             let t = PartialType::T(Type::Object {
-//                 fields: fields
-//                     .iter()
-//                     .map(|(k, v)| (k.clone(), v.meta.t.clone()))
-//                     .collect(),
-//             });
-//             (Object { fields }, PartialMetadata { t, span: meta.span })
-//         })
-//     }
-
-//     fn transform_lambda(
-//         &mut self,
-//         lambda: Lambda<Self::From>,
-//         meta: SymbolMetadata,
-//     ) -> Results<(Lambda<Self::To>, Self::To), Self::Error> {
-//         self.types.extend(
-//             lambda
-//                 .params
-//                 .iter()
-//                 .map(|(s, t)| (s.as_ref().unwrap().clone(), t.clone())),
-//         );
-
-//         let body = lambda
-//             .body
-//             .into_iter()
-//             .map(|e| self.transform(e))
-//             .collect::<Results<Vec<_>, _>>();
-
-//         body.map(|body| {
-//             let return_type =
-//                 resolve_multiple_types(body.iter().filter_map(|expr| match &*expr.expr {
-//                     Expression::Return(Return { expression }) => Some(expression.meta.t.clone()),
-//                     _ => None,
-//                 }));
-
-//             let t = PartialType::T(Type::Lambda {
-//                 params: lambda
-//                     .params
-//                     .iter()
-//                     .map(|(k, v)| (k.clone().unwrap(), v.clone()))
-//                     .collect(),
-//                 rtn: Box::new(return_type),
-//             });
-
-//             (
-//                 Lambda {
-//                     params: lambda.params,
-//                     body,
-//                 },
-//                 PartialMetadata { t, span: meta.span },
-//             )
-//         })
-//     }
-
-//     fn transform_unary_op(
-//         &mut self,
-//         UnaryOperation { arg, op }: UnaryOperation<Self::From>,
-//         meta: SymbolMetadata,
-//     ) -> Results<(UnaryOperation<Self::To>, Self::To), Self::Error> {
-//         self.transform(arg).flat_map(|arg| {
-//             let PartialType::T(ty) = arg.meta.t.clone() else {
-//                 return Results::ok((
-//                     UnaryOperation { arg, op: None },
-//                     PartialMetadata {
-//                         t: PartialType::Unknown,
-//                         span: meta.span,
-//                     },
-//                 ));
-//             };
-
-//             match (&ty, &op) {
-//                 (Type::Number, UnaryOperator::Negate) => Results::ok((
-//                     UnaryOperation {
-//                         arg,
-//                         op: Some(TypedUnaryOperator::NegateNumber),
-//                     },
-//                     PartialMetadata {
-//                         t: PartialType::T(Type::Number),
-//                         span: meta.span,
-//                     },
-//                 )),
-//                 (Type::Boolean, UnaryOperator::Flip) => Results::ok((
-//                     UnaryOperation {
-//                         arg,
-//                         op: Some(TypedUnaryOperator::FlipBool),
-//                     },
-//                     PartialMetadata {
-//                         t: PartialType::T(Type::Boolean),
-//                         span: meta.span,
-//                     },
-//                 )),
-//                 (_, _) => Results::with_error(
-//                     (
-//                         UnaryOperation { arg, op: None },
-//                         PartialMetadata {
-//                             t: PartialType::Unknown,
-//                             span: meta.span,
-//                         },
-//                     ),
-//                     SemanticError::InvalidUrinaryOperation {
-//                         operator: op.clone(),
-//                         t: PartialType::T(ty.clone()),
-//                     }
-//                     .with_span(meta.span),
-//                 ),
-//             }
-//         })
-//     }
-
-//     fn transform_binary_op(
-//         &mut self,
-//         BinaryOperation { lhs, rhs, op }: BinaryOperation<Self::From>,
-//         meta: SymbolMetadata,
-//     ) -> Results<(BinaryOperation<Self::To>, Self::To), Self::Error> {
-//         self.transform(lhs)
-//             .zip(self.transform(rhs))
-//             .flat_map(|(lhs, rhs)| {
-//                 let PartialType::T(lhs_type) = lhs.meta.t.clone() else {
-//                     return Results::ok((
-//                         BinaryOperation { lhs, rhs, op: None },
-//                         PartialMetadata {
-//                             t: PartialType::Unknown,
-//                             span: meta.span,
-//                         },
-//                     ));
-//                 };
-
-//                 let PartialType::T(rhs_type) = rhs.meta.t.clone() else {
-//                     return Results::ok((
-//                         BinaryOperation { lhs, rhs, op: None },
-//                         PartialMetadata {
-//                             t: PartialType::Unknown,
-//                             span: meta.span,
-//                         },
-//                     ));
-//                 };
-
-//                 let Some((result_type, typed_op)) = (match (&op, &lhs_type, &rhs_type) {
-//                     (BinaryOperator::Add, Type::Number, Type::Number) => Some((
-//                         PartialType::T(Type::Number),
-//                         TypedBinaryOperator::AddNumbers,
-//                     )),
-//                     (BinaryOperator::Sub, Type::Number, Type::Number) => Some((
-//                         PartialType::T(Type::Number),
-//                         TypedBinaryOperator::SubNumbers,
-//                     )),
-//                     (BinaryOperator::Mul, Type::Number, Type::Number) => Some((
-//                         PartialType::T(Type::Number),
-//                         TypedBinaryOperator::MultNumbers,
-//                     )),
-//                     (BinaryOperator::Div, Type::Number, Type::Number) => Some((
-//                         PartialType::T(Type::Number),
-//                         TypedBinaryOperator::DivNumbers,
-//                     )),
-//                     (
-//                         BinaryOperator::Wire,
-//                         Type::Object { fields: a },
-//                         Type::Object { fields: b },
-//                     ) => {
-//                         let s1 = a.keys().collect::<BTreeSet<_>>();
-//                         let s2 = b.keys().collect::<BTreeSet<_>>();
-
-//                         if s2.is_subset(&s1)
-//                             && s2.iter().all(|v| {
-//                                 matches!(a.get(v.as_str()), Some(PartialType::T(Type::Node)))
-//                                     && matches!(b.get(v.as_str()), Some(PartialType::T(Type::Node)))
-//                             })
-//                         {
-//                             Some((
-//                                 PartialType::T(Type::Object { fields: a.clone() }),
-//                                 TypedBinaryOperator::WireObject,
-//                             ))
-//                         } else {
-//                             None
-//                         }
-//                     }
-//                     (BinaryOperator::Wire, Type::Node, Type::Node) => {
-//                         Some((PartialType::T(Type::Node), TypedBinaryOperator::WireNode))
-//                     }
-//                     _ => None,
-//                 }) else {
-//                     return Results::with_error(
-//                         (
-//                             BinaryOperation { lhs, rhs, op: None },
-//                             PartialMetadata {
-//                                 t: PartialType::Unknown,
-//                                 span: meta.span,
-//                             },
-//                         ),
-//                         SemanticError::InvalidBinaryOperation {
-//                             operator: op.clone(),
-//                             left: PartialType::T(lhs_type.clone()),
-//                             right: PartialType::T(rhs_type.clone()),
-//                         }
-//                         .with_span(meta.span),
-//                     );
-//                 };
-
-//                 Results::ok((
-//                     BinaryOperation {
-//                         lhs,
-//                         rhs,
-//                         op: Some(typed_op),
-//                     },
-//                     PartialMetadata {
-//                         t: result_type,
-//                         span: meta.span,
-//                     },
-//                 ))
-//             })
-//     }
-
-//     fn transform_call(
-//         &mut self,
-//         Call { expression, args }: Call<Self::From>,
-//         meta: SymbolMetadata,
-//     ) -> Results<(Call<Self::To>, Self::To), Self::Error> {
-//         let args = args
-//             .into_iter()
-//             .map(|(k, v)| self.transform(v).map(|v| (k, v)))
-//             .collect::<Results<BTreeMap<_, _>, _>>();
-
-//         args.zip(self.transform(expression))
-//             .flat_map(|(args, expression)| {
-//                 let PartialType::T(ty) = expression.meta.t.clone() else {
-//                     return Results::ok((
-//                         Call { expression, args },
-//                         PartialMetadata {
-//                             t: PartialType::Unknown,
-//                             span: meta.span,
-//                         },
-//                     ));
-//                 };
-
-//                 let Type::Lambda { params, rtn } = ty.clone() else {
-//                     return Results::with_error(
-//                         (
-//                             Call {
-//                                 expression,
-//                                 args: args.clone(),
-//                             },
-//                             PartialMetadata {
-//                                 t: PartialType::Unknown,
-//                                 span: meta.span,
-//                             },
-//                         ),
-//                         SemanticError::TypeMismatch {
-//                             expected: PartialType::T(Type::Lambda {
-//                                 params: args
-//                                     .iter()
-//                                     .map(|(k, v)| (Symbol::dummy(k.clone()), v.meta.t.clone()))
-//                                     .collect(),
-//                                 rtn: Box::new(PartialType::Unknown),
-//                             }),
-//                             found: PartialType::T(ty),
-//                         }
-//                         .with_span(meta.span),
-//                     );
-//                 };
-
-//                 let result = (
-//                     Call {
-//                         expression,
-//                         args: args.clone(),
-//                     },
-//                     PartialMetadata {
-//                         t: (*rtn).clone(),
-//                         span: meta.span,
-//                     },
-//                 );
-
-//                 let required = params
-//                     .iter()
-//                     .map(|(k, v)| (k.original.clone(), v.clone()))
-//                     .collect::<BTreeMap<_, _>>();
-
-//                 let missing = params
-//                     .iter()
-//                     .filter(|&(name, _)| !args.contains_key(&name.original))
-//                     .map(|(name, expected)| {
-//                         SemanticError::ArgumentMissing {
-//                             name: name.original.clone(),
-//                             t: expected.clone(),
-//                         }
-//                         .with_span(meta.span)
-//                     });
-
-//                 let supplied = args.iter().filter_map(|(name, value)| {
-//                     let name = name.clone();
-
-//                     match required.get(&name) {
-//                         Some(expected) if *expected == value.meta.t => None,
-//                         Some(expected) => Some(
-//                             SemanticError::InvalidArgumentType {
-//                                 name: name.clone(),
-//                                 expected: expected.clone(),
-//                                 got: value.meta.t.clone(),
-//                             }
-//                             .with_span(meta.span),
-//                         ),
-//                         None => Some(
-//                             SemanticError::ExtraArgument { name: name.clone() }
-//                                 .with_span(meta.span),
-//                         ),
-//                     }
-//                 });
-
-//                 Results::with_errors(result, missing.chain(supplied).collect())
-//             })
-//     }
-
-//     fn transform_object_access(
-//         &mut self,
-//         ObjectAccess { expression, field }: ObjectAccess<Self::From>,
-//         meta: SymbolMetadata,
-//     ) -> Results<(ObjectAccess<Self::To>, Self::To), Self::Error> {
-//         self.transform(expression).flat_map(|expression| {
-//             let PartialType::T(ty) = expression.meta.t.clone() else {
-//                 return Results::ok((
-//                     ObjectAccess { expression, field },
-//                     PartialMetadata {
-//                         t: PartialType::Unknown,
-//                         span: meta.span,
-//                     },
-//                 ));
-//             };
-
-//             let Type::Object { fields } = ty.clone() else {
-//                 return Results::with_error(
-//                     (
-//                         ObjectAccess {
-//                             expression,
-//                             field: field.clone(),
-//                         },
-//                         PartialMetadata {
-//                             t: PartialType::Unknown,
-//                             span: meta.span,
-//                         },
-//                     ),
-//                     SemanticError::InvalidFieldAccess {
-//                         object: PartialType::T(ty.clone()),
-//                         field: field.clone(),
-//                     }
-//                     .with_span(meta.span),
-//                 );
-//             };
-
-//             if let Some(t) = fields.get(&field) {
-//                 Results::ok((
-//                     ObjectAccess {
-//                         expression,
-//                         field: field.clone(),
-//                     },
-//                     PartialMetadata {
-//                         t: t.clone(),
-//                         span: meta.span,
-//                     },
-//                 ))
-//             } else {
-//                 Results::with_error(
-//                     (
-//                         ObjectAccess {
-//                             expression,
-//                             field: field.clone(),
-//                         },
-//                         PartialMetadata {
-//                             t: PartialType::Unknown,
-//                             span: meta.span,
-//                         },
-//                     ),
-//                     SemanticError::InvalidFieldAccess {
-//                         object: PartialType::T(ty.clone()),
-//                         field: field.clone(),
-//                     }
-//                     .with_span(meta.span),
-//                 )
-//             }
-//         })
-//     }
-
-//     fn transform_node(
-//         &mut self,
-//         node: ast::AstNode,
-//         meta: Self::From,
-//     ) -> Results<(ast::AstNode, Self::To), Self::Error> {
-//         Results::ok((
-//             node,
-//             PartialMetadata {
-//                 span: meta.span,
-//                 t: PartialType::T(Type::Node),
-//             },
-//         ))
-//     }
-
-//     fn transform_match_definition(
-//         &mut self,
-//         match_definition: ast::MatchDefinition<Self::From>,
-//         meta: Self::From,
-//     ) -> Results<(ast::MatchDefinition<Self::To>, Self::To), Self::Error> {
-//         todo!()
-//     }
-// }
+use std::collections::BTreeMap;
+
+use ast::*;
+
+use crate::resolver::{Symbol, SymbolNode};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticError {
+    pub span: Span,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValueType {
+    Unknown,
+    Never,
+    Node,
+    Number,
+    String,
+    Boolean,
+    None,
+    Array(Box<Self>),
+    Object(BTreeMap<String, Self>),
+    Lambda {
+        params: BTreeMap<String, Self>,
+        rtn: Box<Self>,
+    },
+    Optional(Box<Self>),
+    Tuple(Vec<Self>),
+    Union(Vec<Self>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PartialMetadata {
+    pub span: Span,
+    pub ty: ValueType,
+}
+
+impl Ast for PartialMetadata {
+    type Node<T> = AstNode<T, Self>;
+    type Expression = Self::Node<Expression<Self>>;
+    type Pattern = Self::Node<Pattern<Self>>;
+    type Type = Self::Node<Type<Self>>;
+    type Statement = Self::Node<Statement<Self>>;
+    type Ident = Option<Symbol>;
+    type U = UnaryOperator;
+    type B = BinaryOperator;
+}
+
+pub type TypedProgram = AstNode<Program<PartialMetadata>, PartialMetadata>;
+
+#[derive(Default)]
+pub struct TypeResolver {
+    types: BTreeMap<Symbol, ValueType>,
+}
+
+impl TypeResolver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    fn meta(meta: &SymbolNode, ty: ValueType) -> PartialMetadata {
+        PartialMetadata {
+            span: meta.span,
+            ty,
+        }
+    }
+
+    fn error(meta: &SymbolNode, message: impl Into<String>) -> SemanticError {
+        SemanticError {
+            span: meta.span,
+            message: message.into(),
+        }
+    }
+
+    fn raw_type(
+        &mut self,
+        inner: Type<SymbolNode>,
+        meta: SymbolNode,
+    ) -> Results<Type<PartialMetadata>, SemanticError> {
+        self.transform_type(AstNode { inner, meta })
+            .map(|node| node.inner)
+    }
+    fn bind(
+        &mut self,
+        pattern: &AstNode<Pattern<PartialMetadata>, PartialMetadata>,
+        ty: ValueType,
+    ) {
+        match &pattern.inner {
+            Pattern::Binding(Ident {
+                ident: Some(symbol),
+            }) => {
+                self.types.insert(symbol.clone(), ty);
+            }
+            Pattern::Object(object) => {
+                for (name, pattern) in &object.fields {
+                    self.bind(
+                        pattern,
+                        match &ty {
+                            ValueType::Object(fields) => {
+                                fields.get(name).cloned().unwrap_or(ValueType::Unknown)
+                            }
+                            _ => ValueType::Unknown,
+                        },
+                    );
+                }
+            }
+            Pattern::Array(array) => {
+                for pattern in &array.values {
+                    self.bind(
+                        pattern,
+                        match &ty {
+                            ValueType::Array(item) => (**item).clone(),
+                            _ => ValueType::Unknown,
+                        },
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn compatible(a: &ValueType, b: &ValueType) -> bool {
+    a == b || *a == ValueType::Unknown || *b == ValueType::Unknown
+}
+fn unify(types: impl IntoIterator<Item = ValueType>) -> ValueType {
+    let mut unique = Vec::new();
+    for ty in types {
+        if !unique.contains(&ty) {
+            unique.push(ty);
+        }
+    }
+    match unique.len() {
+        0 => ValueType::None,
+        1 => unique.pop().unwrap(),
+        _ => ValueType::Union(unique),
+    }
+}
+
+impl AstTransform for TypeResolver {
+    type Error = SemanticError;
+    type From = SymbolNode;
+    type To = PartialMetadata;
+
+    fn transform_definition(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Definition<Self::From>, Self::From>,
+    ) -> Results<AstNode<Definition<Self::To>, Self::To>, Self::Error> {
+        self.transform_pattern(inner.lhs)
+            .zip(self.transform_expression(inner.rhs))
+            .map(|(lhs, rhs)| {
+                let ty = rhs.meta.ty.clone();
+                self.bind(&lhs, ty.clone());
+                AstNode {
+                    inner: Definition { lhs, rhs },
+                    meta: Self::meta(&meta, ty),
+                }
+            })
+    }
+    fn transform_type_definition(
+        &mut self,
+        AstNode { inner, meta }: AstNode<TypeDefinition<Self::From>, Self::From>,
+    ) -> Results<AstNode<TypeDefinition<Self::To>, Self::To>, Self::Error> {
+        self.transform_type(inner.rhs).map(|rhs| AstNode {
+            inner: TypeDefinition {
+                lhs: inner.lhs,
+                rhs,
+            },
+            meta: Self::meta(&meta, ValueType::None),
+        })
+    }
+    fn transform_return(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Return<Self::From>, Self::From>,
+    ) -> Results<AstNode<Return<Self::To>, Self::To>, Self::Error> {
+        self.transform_expression(inner.value).map(|value| AstNode {
+            inner: Return { value },
+            meta: Self::meta(&meta, ValueType::Never),
+        })
+    }
+    fn transform_match(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Match<Self::From>, Self::From>,
+    ) -> Results<AstNode<Match<Self::To>, Self::To>, Self::Error> {
+        let on = self.transform_expression(*inner.on);
+        let arms = inner
+            .arms
+            .into_iter()
+            .map(|arm| {
+                let pattern = match arm.pattern {
+                    Some(v) => self.transform_pattern(v).map(Some),
+                    None => Results::ok(None),
+                };
+                let condition = match arm.condition {
+                    Some(v) => self.transform_expression(*v).flat_map(|v| {
+                        let errors = if compatible(&ValueType::Boolean, &v.meta.ty) {
+                            vec![]
+                        } else {
+                            vec![Self::error(&meta, "match guard must be boolean")]
+                        };
+                        Results::with_errors(Some(Box::new(v)), errors)
+                    }),
+                    None => Results::ok(None),
+                };
+                pattern
+                    .zip(condition)
+                    .zip(self.transform_expression(*arm.result).map(Box::new))
+                    .map(|((pattern, condition), result)| MatchArm {
+                        pattern,
+                        condition,
+                        result,
+                    })
+            })
+            .collect::<Results<Vec<MatchArm<PartialMetadata>>, _>>();
+        on.zip(arms).map(|(on, arms)| {
+            let ty = unify(arms.iter().map(|arm| arm.result.meta.ty.clone()));
+            AstNode {
+                inner: Match {
+                    on: Box::new(on),
+                    arms,
+                },
+                meta: Self::meta(&meta, ty),
+            }
+        })
+    }
+    fn transform_ident(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Ident<Self::From>, Self::From>,
+    ) -> Results<AstNode<Ident<Self::To>, Self::To>, Self::Error> {
+        let ty = inner
+            .ident
+            .as_ref()
+            .and_then(|s| self.types.get(s))
+            .cloned()
+            .unwrap_or(ValueType::Unknown);
+        Results::ok(AstNode {
+            inner: Ident { ident: inner.ident },
+            meta: Self::meta(&meta, ty),
+        })
+    }
+    fn transform_array(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Array<Self::From>, Self::From>,
+    ) -> Results<AstNode<Array<Self::To>, Self::To>, Self::Error> {
+        inner
+            .items
+            .into_iter()
+            .map(|v| self.transform_expression(v))
+            .collect::<Results<Vec<_>, _>>()
+            .flat_map(|items| {
+                let item_ty = items
+                    .first()
+                    .map(|v| v.meta.ty.clone())
+                    .unwrap_or(ValueType::Unknown);
+                let errors = if items.iter().all(|v| compatible(&item_ty, &v.meta.ty)) {
+                    vec![]
+                } else {
+                    vec![Self::error(&meta, "array items must have the same type")]
+                };
+                Results::with_errors(
+                    AstNode {
+                        inner: Array { items },
+                        meta: Self::meta(&meta, ValueType::Array(Box::new(item_ty))),
+                    },
+                    errors,
+                )
+            })
+    }
+    fn transform_object(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Object<Self::From>, Self::From>,
+    ) -> Results<AstNode<Object<Self::To>, Self::To>, Self::Error> {
+        inner
+            .fields
+            .into_iter()
+            .map(|(k, v)| self.transform_expression(v).map(|v| (k, v)))
+            .collect::<Results<BTreeMap<_, _>, _>>()
+            .map(|fields| {
+                let ty = ValueType::Object(
+                    fields
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.meta.ty.clone()))
+                        .collect(),
+                );
+                AstNode {
+                    inner: Object { fields },
+                    meta: Self::meta(&meta, ty),
+                }
+            })
+    }
+    fn transform_lambda(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Lambda<Self::From>, Self::From>,
+    ) -> Results<AstNode<Lambda<Self::To>, Self::To>, Self::Error> {
+        let params = inner
+            .params
+            .into_iter()
+            .map(|(symbol, ty)| {
+                self.raw_type(ty, meta.clone()).map(|ty| {
+                    if let Some(s) = &symbol {
+                        self.types.insert(s.clone(), type_value(&ty));
+                    }
+                    (symbol, ty)
+                })
+            })
+            .collect::<Results<BTreeMap<_, _>, _>>();
+        params
+            .zip(self.transform_expression(*inner.body).map(Box::new))
+            .map(|(params, body)| {
+                let ty = ValueType::Lambda {
+                    params: params
+                        .iter()
+                        .filter_map(|(s, t)| s.as_ref().map(|s| (s.name.clone(), type_value(t))))
+                        .collect(),
+                    rtn: Box::new(body.meta.ty.clone()),
+                };
+                AstNode {
+                    inner: Lambda { params, body },
+                    meta: Self::meta(&meta, ty),
+                }
+            })
+    }
+    fn transform_unary_op(
+        &mut self,
+        AstNode { inner, meta }: AstNode<UnaryOperation<Self::From>, Self::From>,
+    ) -> Results<AstNode<UnaryOperation<Self::To>, Self::To>, Self::Error> {
+        self.transform_expression(*inner.arg).flat_map(|arg| {
+            let ty = match inner.op {
+                UnaryOperator::Negate if compatible(&ValueType::Number, &arg.meta.ty) => {
+                    ValueType::Number
+                }
+                UnaryOperator::Flip if compatible(&ValueType::Boolean, &arg.meta.ty) => {
+                    ValueType::Boolean
+                }
+                _ => ValueType::Unknown,
+            };
+            let errors = if ty == ValueType::Unknown && arg.meta.ty != ValueType::Unknown {
+                vec![Self::error(&meta, "invalid operand for unary operator")]
+            } else {
+                vec![]
+            };
+            Results::with_errors(
+                AstNode {
+                    inner: UnaryOperation {
+                        arg: Box::new(arg),
+                        op: inner.op,
+                    },
+                    meta: Self::meta(&meta, ty),
+                },
+                errors,
+            )
+        })
+    }
+    fn transform_binary_op(
+        &mut self,
+        AstNode { inner, meta }: AstNode<BinaryOperation<Self::From>, Self::From>,
+    ) -> Results<AstNode<BinaryOperation<Self::To>, Self::To>, Self::Error> {
+        self.transform_expression(*inner.lhs)
+            .zip(self.transform_expression(*inner.rhs))
+            .flat_map(|(lhs, rhs)| {
+                let ty = match inner.op {
+                    BinaryOperator::Add
+                    | BinaryOperator::Sub
+                    | BinaryOperator::Mul
+                    | BinaryOperator::Div
+                        if compatible(&ValueType::Number, &lhs.meta.ty)
+                            && compatible(&ValueType::Number, &rhs.meta.ty) =>
+                    {
+                        ValueType::Number
+                    }
+                    BinaryOperator::Wire
+                        if compatible(&ValueType::Node, &lhs.meta.ty)
+                            && compatible(&ValueType::Node, &rhs.meta.ty) =>
+                    {
+                        ValueType::Node
+                    }
+                    BinaryOperator::Union => unify([lhs.meta.ty.clone(), rhs.meta.ty.clone()]),
+                    _ => ValueType::Unknown,
+                };
+                let errors = if ty == ValueType::Unknown
+                    && lhs.meta.ty != ValueType::Unknown
+                    && rhs.meta.ty != ValueType::Unknown
+                {
+                    vec![Self::error(&meta, "invalid operands for binary operator")]
+                } else {
+                    vec![]
+                };
+                Results::with_errors(
+                    AstNode {
+                        inner: BinaryOperation {
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                            op: inner.op,
+                        },
+                        meta: Self::meta(&meta, ty),
+                    },
+                    errors,
+                )
+            })
+    }
+    fn transform_call(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Call<Self::From>, Self::From>,
+    ) -> Results<AstNode<Call<Self::To>, Self::To>, Self::Error> {
+        self.transform_expression(*inner.expression)
+            .zip(
+                inner
+                    .args
+                    .into_iter()
+                    .map(|(k, v)| self.transform_expression(v).map(|v| (k, v)))
+                    .collect::<Results<BTreeMap<_, _>, _>>(),
+            )
+            .flat_map(|(expression, args)| {
+                let mut errors = Vec::new();
+                let ty = match &expression.meta.ty {
+                    ValueType::Lambda { params, rtn } => {
+                        for (name, expected) in params {
+                            match args.get(name) {
+                                Some(actual) if compatible(expected, &actual.meta.ty) => {}
+                                Some(_) => errors.push(Self::error(
+                                    &meta,
+                                    format!("argument `{name}` has the wrong type"),
+                                )),
+                                None => errors
+                                    .push(Self::error(&meta, format!("missing argument `{name}`"))),
+                            }
+                        }
+                        for name in args.keys() {
+                            if !params.contains_key(name) {
+                                errors.push(Self::error(
+                                    &meta,
+                                    format!("unexpected argument `{name}`"),
+                                ))
+                            }
+                        }
+                        (**rtn).clone()
+                    }
+                    ValueType::Unknown => ValueType::Unknown,
+                    _ => {
+                        errors.push(Self::error(&meta, "only lambdas can be called"));
+                        ValueType::Unknown
+                    }
+                };
+                Results::with_errors(
+                    AstNode {
+                        inner: Call {
+                            expression: Box::new(expression),
+                            args,
+                        },
+                        meta: Self::meta(&meta, ty),
+                    },
+                    errors,
+                )
+            })
+    }
+    fn transform_object_access(
+        &mut self,
+        AstNode { inner, meta }: AstNode<ObjectAccess<Self::From>, Self::From>,
+    ) -> Results<AstNode<ObjectAccess<Self::To>, Self::To>, Self::Error> {
+        self.transform_expression(*inner.expression)
+            .flat_map(|expression| {
+                let (ty, errors) = match &expression.meta.ty {
+                    ValueType::Object(fields) => match fields.get(&inner.field) {
+                        Some(v) => (v.clone(), vec![]),
+                        None => (
+                            ValueType::Unknown,
+                            vec![Self::error(
+                                &meta,
+                                format!("object has no field `{}`", inner.field),
+                            )],
+                        ),
+                    },
+                    ValueType::Unknown => (ValueType::Unknown, vec![]),
+                    _ => (
+                        ValueType::Unknown,
+                        vec![Self::error(&meta, "field access requires an object")],
+                    ),
+                };
+                Results::with_errors(
+                    AstNode {
+                        inner: ObjectAccess {
+                            expression: Box::new(expression),
+                            field: inner.field,
+                        },
+                        meta: Self::meta(&meta, ty),
+                    },
+                    errors,
+                )
+            })
+    }
+    fn transform_node(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Node, Self::From>,
+    ) -> Results<AstNode<Node, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner,
+            meta: Self::meta(&meta, ValueType::Node),
+        })
+    }
+    fn transform_object_pattern(
+        &mut self,
+        AstNode { inner, meta }: AstNode<ObjectDestructure<Self::From>, Self::From>,
+    ) -> Results<AstNode<ObjectDestructure<Self::To>, Self::To>, Self::Error> {
+        inner
+            .fields
+            .into_iter()
+            .map(|(k, v)| self.transform_pattern(v).map(|v| (k, v)))
+            .collect::<Results<BTreeMap<_, _>, _>>()
+            .map(|fields| AstNode {
+                inner: ObjectDestructure { fields },
+                meta: Self::meta(&meta, ValueType::Unknown),
+            })
+    }
+    fn transform_array_pattern(
+        &mut self,
+        AstNode { inner, meta }: AstNode<ArrayDestructure<Self::From>, Self::From>,
+    ) -> Results<AstNode<ArrayDestructure<Self::To>, Self::To>, Self::Error> {
+        inner
+            .values
+            .into_iter()
+            .map(|v| self.transform_pattern(v))
+            .collect::<Results<Vec<_>, _>>()
+            .map(|values| AstNode {
+                inner: ArrayDestructure { values },
+                meta: Self::meta(&meta, ValueType::Unknown),
+            })
+    }
+    fn transform_enum_pattern(
+        &mut self,
+        AstNode { inner, meta }: AstNode<EnumDestructure, Self::From>,
+    ) -> Results<AstNode<EnumDestructure, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner,
+            meta: Self::meta(&meta, ValueType::Unknown),
+        })
+    }
+    fn transform_import(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Import<Self::From>, Self::From>,
+    ) -> Results<AstNode<Import<Self::To>, Self::To>, Self::Error> {
+        self.transform_pattern(inner.imports)
+            .map(|imports| AstNode {
+                inner: Import {
+                    imports,
+                    path: inner.path,
+                },
+                meta: Self::meta(&meta, ValueType::None),
+            })
+    }
+    fn transform_type_node(
+        &mut self,
+        n: AstNode<NodeType, Self::From>,
+    ) -> Results<AstNode<NodeType, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner: n.inner,
+            meta: Self::meta(&n.meta, ValueType::Node),
+        })
+    }
+    fn transform_type_number(
+        &mut self,
+        n: AstNode<NumberType, Self::From>,
+    ) -> Results<AstNode<NumberType, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner: n.inner,
+            meta: Self::meta(&n.meta, ValueType::Number),
+        })
+    }
+    fn transform_type_string(
+        &mut self,
+        n: AstNode<StringType, Self::From>,
+    ) -> Results<AstNode<StringType, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner: n.inner,
+            meta: Self::meta(&n.meta, ValueType::String),
+        })
+    }
+    fn transform_type_boolean(
+        &mut self,
+        n: AstNode<BooleanType, Self::From>,
+    ) -> Results<AstNode<BooleanType, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner: n.inner,
+            meta: Self::meta(&n.meta, ValueType::Boolean),
+        })
+    }
+    fn transform_type_none(
+        &mut self,
+        n: AstNode<NoneType, Self::From>,
+    ) -> Results<AstNode<NoneType, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner: n.inner,
+            meta: Self::meta(&n.meta, ValueType::None),
+        })
+    }
+    fn transform_type_never(
+        &mut self,
+        n: AstNode<NeverType, Self::From>,
+    ) -> Results<AstNode<NeverType, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner: n.inner,
+            meta: Self::meta(&n.meta, ValueType::Never),
+        })
+    }
+    fn transform_type_object(
+        &mut self,
+        AstNode { inner, meta }: AstNode<ObjectType<Self::From>, Self::From>,
+    ) -> Results<AstNode<ObjectType<Self::To>, Self::To>, Self::Error> {
+        inner
+            .fields
+            .into_iter()
+            .map(|(k, v)| self.transform_type(v).map(|v| (k, v)))
+            .collect::<Results<BTreeMap<_, _>, _>>()
+            .map(|fields| {
+                let ty = ValueType::Object(
+                    fields
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.meta.ty.clone()))
+                        .collect(),
+                );
+                AstNode {
+                    inner: ObjectType { fields },
+                    meta: Self::meta(&meta, ty),
+                }
+            })
+    }
+    fn transform_type_array(
+        &mut self,
+        AstNode { inner, meta }: AstNode<ArrayType<Self::From>, Self::From>,
+    ) -> Results<AstNode<ArrayType<Self::To>, Self::To>, Self::Error> {
+        self.transform_type(*inner.item_type).map(|item_type| {
+            let ty = ValueType::Array(Box::new(item_type.meta.ty.clone()));
+            AstNode {
+                inner: ArrayType {
+                    item_type: Box::new(item_type),
+                },
+                meta: Self::meta(&meta, ty),
+            }
+        })
+    }
+    fn transform_type_optional(
+        &mut self,
+        AstNode { inner, meta }: AstNode<OptionalType<Self::From>, Self::From>,
+    ) -> Results<AstNode<OptionalType<Self::To>, Self::To>, Self::Error> {
+        self.transform_type(*inner.inner).map(|inner| {
+            let ty = ValueType::Optional(Box::new(inner.meta.ty.clone()));
+            AstNode {
+                inner: OptionalType {
+                    inner: Box::new(inner),
+                },
+                meta: Self::meta(&meta, ty),
+            }
+        })
+    }
+    fn transform_type_lambda(
+        &mut self,
+        AstNode { inner, meta }: AstNode<LambdaType<Self::From>, Self::From>,
+    ) -> Results<AstNode<LambdaType<Self::To>, Self::To>, Self::Error> {
+        inner
+            .params
+            .into_iter()
+            .map(|(k, v)| self.transform_type(v).map(|v| (k, v)))
+            .collect::<Results<BTreeMap<_, _>, _>>()
+            .zip(self.transform_type(*inner.rtn))
+            .map(|(params, rtn)| {
+                let ty = ValueType::Lambda {
+                    params: params
+                        .iter()
+                        .filter_map(|(k, v)| {
+                            k.as_ref().map(|k| (k.name.clone(), v.meta.ty.clone()))
+                        })
+                        .collect(),
+                    rtn: Box::new(rtn.meta.ty.clone()),
+                };
+                AstNode {
+                    inner: LambdaType {
+                        params,
+                        rtn: Box::new(rtn),
+                    },
+                    meta: Self::meta(&meta, ty),
+                }
+            })
+    }
+    fn transform_type_union(
+        &mut self,
+        AstNode { inner, meta }: AstNode<UnionType<Self::From>, Self::From>,
+    ) -> Results<AstNode<UnionType<Self::To>, Self::To>, Self::Error> {
+        inner
+            .options
+            .into_iter()
+            .map(|v| self.transform_type(v))
+            .collect::<Results<Vec<_>, _>>()
+            .map(|options| {
+                let ty = ValueType::Union(options.iter().map(|v| v.meta.ty.clone()).collect());
+                AstNode {
+                    inner: UnionType { options },
+                    meta: Self::meta(&meta, ty),
+                }
+            })
+    }
+    fn transform_type_tuple(
+        &mut self,
+        AstNode { inner, meta }: AstNode<TupleType<Self::From>, Self::From>,
+    ) -> Results<AstNode<TupleType<Self::To>, Self::To>, Self::Error> {
+        inner
+            .types
+            .into_iter()
+            .map(|v| self.transform_type(v))
+            .collect::<Results<Vec<_>, _>>()
+            .map(|types| {
+                let ty = ValueType::Tuple(types.iter().map(|v| v.meta.ty.clone()).collect());
+                AstNode {
+                    inner: TupleType { types },
+                    meta: Self::meta(&meta, ty),
+                }
+            })
+    }
+    fn transform_string(
+        &mut self,
+        n: AstNode<String, Self::From>,
+    ) -> Results<AstNode<String, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner: n.inner,
+            meta: Self::meta(&n.meta, ValueType::String),
+        })
+    }
+    fn transform_boolean(
+        &mut self,
+        n: AstNode<bool, Self::From>,
+    ) -> Results<AstNode<bool, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner: n.inner,
+            meta: Self::meta(&n.meta, ValueType::Boolean),
+        })
+    }
+    fn transform_number(
+        &mut self,
+        n: AstNode<f64, Self::From>,
+    ) -> Results<AstNode<f64, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner: n.inner,
+            meta: Self::meta(&n.meta, ValueType::Number),
+        })
+    }
+    fn transform_block(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Block<Self::From>, Self::From>,
+    ) -> Results<AstNode<Block<Self::To>, Self::To>, Self::Error> {
+        inner
+            .body
+            .into_iter()
+            .map(|v| self.transform_statement(v))
+            .collect::<Results<Vec<_>, _>>()
+            .map(|body| {
+                let ty = body
+                    .last()
+                    .map(|v| v.meta.ty.clone())
+                    .unwrap_or(ValueType::None);
+                AstNode {
+                    inner: Block { body },
+                    meta: Self::meta(&meta, ty),
+                }
+            })
+    }
+}
+
+fn type_value(ty: &Type<PartialMetadata>) -> ValueType {
+    match ty {
+        Type::Node(_) => ValueType::Node,
+        Type::Number(_) => ValueType::Number,
+        Type::String(_) => ValueType::String,
+        Type::Boolean(_) => ValueType::Boolean,
+        Type::None(_) => ValueType::None,
+        Type::Never(_) => ValueType::Never,
+        Type::Object(v) => ValueType::Object(
+            v.fields
+                .iter()
+                .map(|(k, v)| (k.clone(), v.meta.ty.clone()))
+                .collect(),
+        ),
+        Type::Array(v) => ValueType::Array(Box::new(v.item_type.meta.ty.clone())),
+        Type::Optional(v) => ValueType::Optional(Box::new(v.inner.meta.ty.clone())),
+        Type::Lambda(v) => ValueType::Lambda {
+            params: v
+                .params
+                .iter()
+                .filter_map(|(k, v)| k.as_ref().map(|k| (k.name.clone(), v.meta.ty.clone())))
+                .collect(),
+            rtn: Box::new(v.rtn.meta.ty.clone()),
+        },
+        Type::Union(v) => ValueType::Union(v.options.iter().map(|v| v.meta.ty.clone()).collect()),
+        Type::Tuple(v) => ValueType::Tuple(v.types.iter().map(|v| v.meta.ty.clone()).collect()),
+    }
+}

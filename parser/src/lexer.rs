@@ -33,6 +33,9 @@ pub enum Keyword {
 
     #[strum(serialize = "import")]
     Import,
+
+    #[strum(serialize = "if")]
+    If,
 }
 
 #[derive(Clone, Debug, PartialEq, EnumString, EnumIter, AsRefStr)]
@@ -88,6 +91,8 @@ pub enum Symbols {
 
     #[strum(serialize = "@")]
     At,
+    #[strum(serialize = "?")]
+    Question,
 }
 
 impl fmt::Display for Symbols {
@@ -185,19 +190,22 @@ pub fn lexer<'src>()
         .map(Token::Symbol)
         .labelled("Symbol");
 
-    let keyword = enum_choice(Keyword::iter().collect())
-        .map(Token::Keyword)
-        .labelled("Keyword");
-
     let ident = text::ascii::ident()
         .map(|ident: &str| match ident {
             "true" => Token::Bool(true),
             "false" => Token::Bool(false),
+            "let" => Token::Keyword(Keyword::Let),
+            "return" => Token::Keyword(Keyword::Return),
+            "match" => Token::Keyword(Keyword::Match),
+            "type" => Token::Keyword(Keyword::Type),
+            "from" => Token::Keyword(Keyword::From),
+            "import" => Token::Keyword(Keyword::Import),
+            "if" => Token::Keyword(Keyword::If),
             _ => Token::Identifier(ident),
         })
         .labelled("Ident");
 
-    let token = choice((num, string, symbol, keyword, ident));
+    let token = choice((num, string, symbol, ident));
 
     let comment = just("//")
         .then(any().and_is(just('\n').not()).repeated())

@@ -1,19 +1,49 @@
 use std::fs::read_to_string;
 
-use crate::{compile, print_errors};
+use crate::compile;
 
 #[test]
-pub fn test() {
-    let filename = "main.etch";
+fn parses_example_program() {
+    let input = "1".to_string();
 
+    assert!(compile(&input).is_ok());
+}
+
+#[test]
+fn parses_the_example_program() {
     let input = read_to_string("../examples/main.etch").unwrap();
 
-    let compile_result = compile(&input);
+    assert!(compile(&input).is_ok());
+}
 
-    match compile_result {
-        Ok(result) => println!("{:?}", result),
-        Err(compiler_errors) => {
-            print_errors(filename, &input, compiler_errors);
-        }
-    }
+#[test]
+fn keeps_keywords_inside_identifiers() {
+    assert!(compile("let returnValue = 1").is_ok());
+}
+
+#[test]
+fn rejects_duplicate_named_fields() {
+    assert!(compile("f(value: 1, value: 2)").is_err());
+}
+
+#[test]
+fn parses_all_supported_type_forms() {
+    let input = "type Callback = (value: Number) -> String; type Value = Number? | String; type Item = { value: Number }";
+
+    assert!(compile(input).is_ok());
+}
+
+#[test]
+fn rejects_match_arms_without_a_pattern_or_guard() {
+    assert!(compile("match value { => 1 }").is_err());
+}
+
+#[test]
+fn reports_undefined_names() {
+    assert!(compile("missing").is_err());
+}
+
+#[test]
+fn reports_invalid_operations() {
+    assert!(compile("true + 1").is_err());
 }

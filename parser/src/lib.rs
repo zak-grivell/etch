@@ -1,6 +1,6 @@
 #![allow(unused_imports)]
 
-mod parser;
+pub mod parser;
 
 #[macro_use]
 pub(crate) mod lexer;
@@ -13,23 +13,21 @@ pub(crate) mod semantic;
 mod test;
 
 use ariadne::{Color, Label, Report, ReportKind, sources};
-use ast::{AstNode, AstTransform, NoneType};
+use ast::{AstNode, AstTransform, Program};
 use chumsky::Parser as _;
 use chumsky::error::Rich;
 use chumsky::input::IterInput;
 use chumsky::span::{SimpleSpan, Span, Spanned};
 
 use crate::lexer::Token;
-// use crate::resolver::{SymbolResolver, SymbolicError};
-// use crate::cleaner::{StrongMetadata, UnresolvedError};
-// use crate::semantic::{SemanticError, TypeResolver};
+use crate::resolver::{ResolverError, SymbolResolver};
+use crate::semantic::{SemanticError, TypeResolver, TypedProgram};
 
 pub enum CompileErrors<'src> {
     LexerError(Rich<'src, char, SimpleSpan>),
     ParserError(Rich<'src, Token<'src>, SimpleSpan>),
-    // ResolverError(Spanned<SymbolicError>),
-    // SemanticError(Spanned<SemanticError>),
-    // CleanerError(Spanned<UnresolvedError>),
+    ResolverError(ResolverError),
+    SemanticError(SemanticError),
 }
 
 impl<'src> CompileErrors<'src> {
@@ -37,9 +35,8 @@ impl<'src> CompileErrors<'src> {
         match self {
             Self::LexerError(_) => String::from("lexer"),
             Self::ParserError(_) => String::from("parser"),
-            // Self::ResolverError(_) => String::from("symbol resolver"),
-            // Self::SemanticError(_) => String::from("type checking"),
-            // Self::CleanerError(_) => String::from("cleaner"),
+            Self::ResolverError(_) => String::from("symbol resolver"),
+            Self::SemanticError(_) => String::from("type checking"),
         }
     }
 
@@ -47,79 +44,70 @@ impl<'src> CompileErrors<'src> {
         match self {
             Self::LexerError(e) => e.map_token(|v| v.to_string()),
             Self::ParserError(e) => e.map_token(|v| v.to_string()),
-            // Self::ResolverError(e) => e.inner.into_rich(e.span),
-            // Self::SemanticError(e) => e.inner.into_rich(e.span),
-            // Self::CleanerError(e) => e.inner.into_rich(e.span),
+            Self::ResolverError(e) => Rich::custom(e.span, e.message),
+            Self::SemanticError(e) => Rich::custom(e.span, e.message),
         }
     }
 }
 
-pub fn compile<'a>(input: &'a str) -> Result<Vec<NoneType>, Vec<CompileErrors<'a>>> {
+pub type ParsedProgram = AstNode<Program<parser::ParsedMetadata>, parser::ParsedMetadata>;
+
+pub fn compile<'a>(input: &'a str) -> Result<Vec<TypedProgram>, Vec<CompileErrors<'a>>> {
     let (tokens, errors) = lexer::lexer().parse(input).into_output_errors();
 
-    let lexer_errors = errors.into_iter().map(CompileErrors::LexerError).collect();
+    let lexer_errors: Vec<_> = errors.into_iter().map(CompileErrors::LexerError).collect();
 
     let Some(tokens) = tokens else {
         return Err(lexer_errors);
     };
 
-    dbg!(tokens);
+    let eof = Span::new((), input.len()..input.len());
 
-    // let eof = Span::new((), input.len()..input.len());
+    let (parsed, errors) = parser::parse()
+        .parse(IterInput::new(
+            tokens.into_iter().map(|t| (t.inner, t.span)),
+            eof,
+        ))
+        .into_output_errors();
 
-    todo!();
+    let parser_errors: Vec<_> = errors.into_iter().map(CompileErrors::ParserError).collect();
+    let errors = lexer_errors
+        .into_iter()
+        .chain(parser_errors)
+        .collect::<Vec<_>>();
 
-    // let (parsed, errors) = parser::parse()
-    //     .parse(IterInput::new(
-    //         tokens
-    //             .clone()
-    //             .into_iter()
-    //             .map(|t| (t.inner.clone(), t.span)),
-    //         eof,
-    //     ))
-    //     .into_output_errors();
+    if !errors.is_empty() {
+        return Err(errors);
+    }
 
-    // let parser_errors: Vec<_> = errors.into_iter().map(CompileErrors::ParserError).collect();
+    let Some(parsed) = parsed else {
+        return Err(Vec::new());
+    };
 
-    // let Some(parsed) = parsed else {
-    //     return Err(parser_errors.into_iter().chain(lexer_errors).collect());
-    // };
+    let (resolved, resolver_errors) = SymbolResolver::new().transform_all(parsed).into_parts();
+    let resolver_errors = resolver_errors
+        .into_iter()
+        .map(CompileErrors::ResolverError)
+        .collect::<Vec<_>>();
+    if !resolver_errors.is_empty() {
+        return Err(resolver_errors);
+    }
 
-    // let (resolved, resolver_errors) = SymbolResolver::new().transform_all(parsed).into_parts();
+    let (typed, semantic_errors) = TypeResolver::new().transform_all(resolved).into_parts();
+    let semantic_errors = semantic_errors
+        .into_iter()
+        .map(CompileErrors::SemanticError)
+        .collect::<Vec<_>>();
+    if !semantic_errors.is_empty() {
+        return Err(semantic_errors);
+    }
 
-    // let resolver_errors = resolver_errors
-    //     .into_iter()
-    //     .map(CompileErrors::ResolverError)
-    //     .collect::<Vec<_>>();
+    let (cleaned, cleaner_errors) = cleaner::ExpressionStripper
+        .transform_all(typed)
+        .into_parts();
+    debug_assert!(cleaner_errors.is_empty());
 
-    // let (typed_tree, type_errors) = TypeResolver::new().transform_all(resolved).into_parts();
-
-    // let type_errors = type_errors
-    //     .into_iter()
-    //     .map(CompileErrors::SemanticError)
-    //     .collect::<Vec<_>>();
-
-    // let errors = [lexer_errors, parser_errors, resolver_errors, type_errors]
-    //     .into_iter()
-    //     .flatten()
-    //     .collect::<Vec<_>>();
-
-    // if !errors.is_empty() {
-    //     return Err(errors);
-    // }
-
-    // let (strong, errors) = cleaner::ExpressionStripper
-    //     .transform_all(typed_tree)
-    //     .into_parts();
-
-    // if !errors.is_empty() {
-    //     return Err(errors
-    //         .into_iter()
-    //         .map(CompileErrors::CleanerError)
-    //         .collect());
-    // }
-
-    // Ok(strong)
+    Ok(cleaned)
 }
 
 pub fn print_errors(filename: &str, src: &str, errors: Vec<CompileErrors>) {
