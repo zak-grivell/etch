@@ -7,28 +7,7 @@ pub enum CleanerError {}
 
 pub struct ExpressionStripper;
 
-macro_rules! identity_generic {
-    ($name:ident, $ty:ident) => {
-        fn $name(
-            &mut self,
-            node: AstNode<$ty<Self::From>, Self::From>,
-        ) -> Results<AstNode<$ty<Self::To>, Self::To>, Self::Error> {
-            Results::ok(node)
-        }
-    };
-}
-
-macro_rules! identity_leaf {
-    ($name:ident, $ty:ty) => {
-        fn $name(
-            &mut self,
-            node: AstNode<$ty, Self::From>,
-        ) -> Results<AstNode<$ty, Self::To>, Self::Error> {
-            Results::ok(node)
-        }
-    };
-}
-
+#[ast::transformer]
 impl AstTransform for ExpressionStripper {
     type Error = CleanerError;
     type From = PartialMetadata;

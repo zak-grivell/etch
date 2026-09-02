@@ -1,5 +1,3 @@
-#![allow(unused_imports)]
-
 pub mod parser;
 
 #[macro_use]
@@ -13,11 +11,11 @@ pub(crate) mod semantic;
 mod test;
 
 use ariadne::{Color, Label, Report, ReportKind, sources};
-use ast::{AstNode, AstTransform, Program};
+use ast::{AstNode, AstTraverse, Program};
 use chumsky::Parser as _;
 use chumsky::error::Rich;
 use chumsky::input::IterInput;
-use chumsky::span::{SimpleSpan, Span, Spanned};
+use chumsky::span::{SimpleSpan, Span};
 
 use crate::lexer::Token;
 use crate::resolver::{ResolverError, SymbolResolver};
@@ -50,7 +48,7 @@ impl<'src> CompileErrors<'src> {
     }
 }
 
-pub type ParsedProgram = AstNode<Program<parser::ParsedMetadata>, parser::ParsedMetadata>;
+pub type ParsedProgram = AstNode<Program<parser::ParsedNode>, parser::ParsedNode>;
 
 pub fn compile<'a>(input: &'a str) -> Result<Vec<TypedProgram>, Vec<CompileErrors<'a>>> {
     let (tokens, errors) = lexer::lexer().parse(input).into_output_errors();

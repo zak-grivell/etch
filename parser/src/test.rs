@@ -1,6 +1,8 @@
 use std::fs::read_to_string;
 
 use crate::compile;
+use crate::lexer::{Prefix, Token, lexer};
+use chumsky::Parser;
 
 #[test]
 fn parses_example_program() {
@@ -46,4 +48,29 @@ fn reports_undefined_names() {
 #[test]
 fn reports_invalid_operations() {
     assert!(compile("true + 1").is_err());
+}
+
+#[test]
+fn applies_si_prefixes_and_preserves_units() {
+    let (tokens, errors) = lexer().parse("1kOhm").into_output_errors();
+    assert!(errors.is_empty());
+    assert_eq!(
+        tokens.unwrap()[0].inner,
+        Token::Number {
+            value: 1000.0,
+            prefix: Some(Prefix::Kilo),
+            unit: Some("Ohm"),
+        }
+    );
+}
+
+#[test]
+fn parses_and_checks_comparisons() {
+    assert!(compile("1 < 2; 2 >= 1; true == false").is_ok());
+    assert!(compile("true < false").is_err());
+}
+
+#[test]
+fn supports_object_and_pattern_shorthand() {
+    assert!(compile("let value = 1; let { value } = { value }").is_ok());
 }

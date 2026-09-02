@@ -45,6 +45,7 @@ impl Ast for PartialMetadata {
     type Ident = Option<Symbol>;
     type U = UnaryOperator;
     type B = BinaryOperator;
+    type Meta = Self;
 }
 
 pub type TypedProgram = AstNode<Program<PartialMetadata>, PartialMetadata>;
@@ -58,16 +59,13 @@ impl TypeResolver {
     pub fn new() -> Self {
         Self::default()
     }
-    fn meta(meta: &SymbolNode, ty: ValueType) -> PartialMetadata {
-        PartialMetadata {
-            span: meta.span,
-            ty,
-        }
+    fn meta(meta: &Span, ty: ValueType) -> PartialMetadata {
+        PartialMetadata { span: *meta, ty }
     }
 
-    fn error(meta: &SymbolNode, message: impl Into<String>) -> SemanticError {
+    fn error(meta: &Span, message: impl Into<String>) -> SemanticError {
         SemanticError {
-            span: meta.span,
+            span: *meta,
             message: message.into(),
         }
     }
@@ -75,7 +73,7 @@ impl TypeResolver {
     fn raw_type(
         &mut self,
         inner: Type<SymbolNode>,
-        meta: SymbolNode,
+        meta: Span,
     ) -> Results<Type<PartialMetadata>, SemanticError> {
         self.transform_type(AstNode { inner, meta })
             .map(|node| node.inner)
@@ -137,6 +135,7 @@ fn unify(types: impl IntoIterator<Item = ValueType>) -> ValueType {
     }
 }
 
+#[ast::transformer]
 impl AstTransform for TypeResolver {
     type Error = SemanticError;
     type From = SymbolNode;
@@ -296,7 +295,7 @@ impl AstTransform for TypeResolver {
             .params
             .into_iter()
             .map(|(symbol, ty)| {
-                self.raw_type(ty, meta.clone()).map(|ty| {
+                self.raw_type(ty, meta).map(|ty| {
                     if let Some(s) = &symbol {
                         self.types.insert(s.clone(), type_value(&ty));
                     }
@@ -359,6 +358,18 @@ impl AstTransform for TypeResolver {
             .zip(self.transform_expression(*inner.rhs))
             .flat_map(|(lhs, rhs)| {
                 let ty = match inner.op {
+                    BinaryOperator::Equal if compatible(&lhs.meta.ty, &rhs.meta.ty) => {
+                        ValueType::Boolean
+                    }
+                    BinaryOperator::LessThan
+                    | BinaryOperator::GreaterThan
+                    | BinaryOperator::LessThanOrEqual
+                    | BinaryOperator::GreaterThanOrEqual
+                        if compatible(&ValueType::Number, &lhs.meta.ty)
+                            && compatible(&ValueType::Number, &rhs.meta.ty) =>
+                    {
+                        ValueType::Boolean
+                    }
                     BinaryOperator::Add
                     | BinaryOperator::Sub
                     | BinaryOperator::Mul

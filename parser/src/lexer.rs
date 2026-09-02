@@ -118,6 +118,19 @@ pub enum Prefix {
     Giga,
 }
 
+impl Prefix {
+    fn multiplier(&self) -> f64 {
+        match self {
+            Self::Nano => 1e-9,
+            Self::Micro => 1e-6,
+            Self::Mili => 1e-3,
+            Self::Kilo => 1e3,
+            Self::Mega => 1e6,
+            Self::Giga => 1e9,
+        }
+    }
+}
+
 fn enum_choice<'src, E>(
     mut values: Vec<E>,
 ) -> impl Parser<'src, &'src str, E, extra::Err<Rich<'src, char>>>
@@ -173,10 +186,13 @@ pub fn lexer<'src>()
             .or_not(),
         )
         .then(text::ascii::ident().or_not())
-        .map(|((value, prefix), unit)| Token::Number {
-            value,
-            prefix,
-            unit,
+        .map(|((value, prefix), unit)| {
+            let value = value * prefix.as_ref().map_or(1.0, Prefix::multiplier);
+            Token::Number {
+                value,
+                prefix,
+                unit,
+            }
         })
         .labelled("Number");
 

@@ -15,7 +15,7 @@ type Extra<'src> = extra::Err<Rich<'src, Token<'src>, Span>>;
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ParsedNode;
 
-type Parsed<T> = AstNode<T, Span>;
+type Parsed<T> = AstNode<T, ParsedNode>;
 type ParsedExpression = Parsed<Expression<ParsedNode>>;
 type LambdaParts = (BTreeMap<String, Parsed<Type<ParsedNode>>>, ParsedExpression);
 
@@ -39,10 +39,10 @@ where
     I: Input<'src, Span = Span>,
     E: ParserExtra<'src, I>,
 {
-    fn spanned_node(self) -> impl Parser<'src, I, AstNode<O, ParsedMetadata>, E> {
+    fn spanned_node(self) -> impl Parser<'src, I, AstNode<O, ParsedNode>, E> {
         self.map_with(|inner, e| AstNode {
             inner,
-            meta: ParsedMetadata { span: e.span() },
+            meta: e.span(),
         })
     }
 }
@@ -70,7 +70,7 @@ fn collect_unique<'src, V>(
     Ok(fields)
 }
 
-pub fn parse<'src, I>() -> impl Parser<'src, I, Vec<Parsed<Program<ParsedMetadata>>>, Extra<'src>>
+pub fn parse<'src, I>() -> impl Parser<'src, I, Vec<Parsed<Program<ParsedNode>>>, Extra<'src>>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = Span>,
 {
@@ -78,7 +78,7 @@ where
 }
 
 pub fn program_parse<'src, I>()
--> impl Parser<'src, I, Vec<Parsed<Program<ParsedMetadata>>>, Extra<'src>>
+-> impl Parser<'src, I, Vec<Parsed<Program<ParsedNode>>>, Extra<'src>>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = Span>,
 {
@@ -94,7 +94,7 @@ where
         .boxed();
 
     let statement = statement_parse(expression_parse().boxed())
-        .map(|statement: Parsed<Statement<ParsedMetadata>>| statement.map(Program::Statement))
+        .map(|statement: Parsed<Statement<ParsedNode>>| statement.map(Program::Statement))
         .boxed();
 
     choice((import, statement))
@@ -109,10 +109,10 @@ where
 
 fn statement_parse<'src, I, P>(
     expression_parse: P,
-) -> impl Parser<'src, I, Parsed<Statement<ParsedMetadata>>, Extra<'src>>
+) -> impl Parser<'src, I, Parsed<Statement<ParsedNode>>, Extra<'src>>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = Span>,
-    P: Parser<'src, I, Parsed<Expression<ParsedMetadata>>, Extra<'src>> + Clone + 'src,
+    P: Parser<'src, I, Parsed<Expression<ParsedNode>>, Extra<'src>> + Clone + 'src,
 {
     let definition = keyword!(Let)
         .ignore_then(pattern_parse())
@@ -142,14 +142,14 @@ where
         .boxed();
 
     let expression = expression_parse
-        .map(|expr: Parsed<Expression<ParsedMetadata>>| expr.map(Statement::Expression))
+        .map(|expr: Parsed<Expression<ParsedNode>>| expr.map(Statement::Expression))
         .boxed();
 
     choice((definition, type_definition, rtn, expression))
 }
 
 pub fn statements_parse<'src, I>()
--> impl Parser<'src, I, Vec<Parsed<Statement<ParsedMetadata>>>, Extra<'src>>
+-> impl Parser<'src, I, Vec<Parsed<Statement<ParsedNode>>>, Extra<'src>>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = Span>,
 {
@@ -176,7 +176,7 @@ where
 }
 
 pub fn expression_parse<'src, I>()
--> impl Parser<'src, I, Parsed<Expression<ParsedMetadata>>, Extra<'src>>
+-> impl Parser<'src, I, Parsed<Expression<ParsedNode>>, Extra<'src>>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = Span>,
 {
@@ -186,7 +186,7 @@ where
 
     recursive(
         |expression: Recursive<
-            dyn Parser<'src, I, Parsed<Expression<ParsedMetadata>>, Extra<'src>>,
+            dyn Parser<'src, I, Parsed<Expression<ParsedNode>>, Extra<'src>>,
         >| {
             let primitive = primative_parse()
                 .map(|node: Parsed<Primative>| node.map(Expression::Primative))
@@ -197,9 +197,19 @@ where
                 .spanned_node()
                 .boxed();
 
-            let object = ident
-                .then_ignore(symbol!(Colon))
-                .then(expression.clone())
+            let object_field = ident
+                .then(symbol!(Colon).ignore_then(expression.clone()).or_not())
+                .map_with(|(name, value), e| {
+                    let value = value.unwrap_or_else(|| AstNode {
+                        inner: Expression::Ident(Ident {
+                            ident: name.clone(),
+                        }),
+                        meta: e.span(),
+                    });
+                    (name, value)
+                });
+
+            let object = object_field
                 .separated_by(symbol!(Comma))
                 .allow_trailing()
                 .collect::<Vec<_>>()
@@ -270,12 +280,12 @@ where
             let dot = tree
                 .foldl_with(
                     symbol!(Dot).ignore_then(ident).repeated(),
-                    |expression: Parsed<Expression<ParsedMetadata>>, field: String, e| AstNode {
+                    |expression: Parsed<Expression<ParsedNode>>, field: String, e| AstNode {
                         inner: Expression::ObjectAccess(ast::ObjectAccess {
                             expression: Box::new(expression),
                             field,
                         }),
-                        meta: ParsedMetadata { span: e.span() },
+                        meta: e.span(),
                     },
                 )
                 .boxed();
@@ -291,14 +301,14 @@ where
                         .try_map(collect_unique)
                         .delimited_by(symbol!(OpenParenthesis), symbol!(ClosedParenthesis))
                         .repeated(),
-                    |expression: Parsed<Expression<ParsedMetadata>>,
-                     args: BTreeMap<String, Parsed<Expression<ParsedMetadata>>>,
+                    |expression: Parsed<Expression<ParsedNode>>,
+                     args: BTreeMap<String, Parsed<Expression<ParsedNode>>>,
                      e| AstNode {
                         inner: Expression::Call(ast::Call {
                             expression: Box::new(expression),
                             args,
                         }),
-                        meta: ParsedMetadata { span: e.span() },
+                        meta: e.span(),
                     },
                 )
                 .boxed();
@@ -310,12 +320,12 @@ where
             .repeated()
             .foldr_with(
                 call,
-                |op: UnaryOperator, arg: Parsed<Expression<ParsedMetadata>>, e| AstNode {
+                |op: UnaryOperator, arg: Parsed<Expression<ParsedNode>>, e| AstNode {
                     inner: Expression::UnaryOperation(ast::UnaryOperation {
                         arg: Box::new(arg),
                         op,
                     }),
-                    meta: ParsedMetadata { span: e.span() },
+                    meta: e.span(),
                 },
             )
             .boxed();
@@ -329,15 +339,15 @@ where
                     ))
                     .then(unary)
                     .repeated(),
-                    |lhs: Parsed<Expression<ParsedMetadata>>,
-                     (op, rhs): (BinaryOperator, Parsed<Expression<ParsedMetadata>>),
+                    |lhs: Parsed<Expression<ParsedNode>>,
+                     (op, rhs): (BinaryOperator, Parsed<Expression<ParsedNode>>),
                      e| AstNode {
                         inner: Expression::BinaryOperation(ast::BinaryOperation {
                             lhs: Box::new(lhs),
                             rhs: Box::new(rhs),
                             op,
                         }),
-                        meta: ParsedMetadata { span: e.span() },
+                        meta: e.span(),
                     },
                 )
                 .boxed();
@@ -351,37 +361,62 @@ where
                     ))
                     .then(products)
                     .repeated(),
-                    |lhs: Parsed<Expression<ParsedMetadata>>,
-                     (op, rhs): (BinaryOperator, Parsed<Expression<ParsedMetadata>>),
+                    |lhs: Parsed<Expression<ParsedNode>>,
+                     (op, rhs): (BinaryOperator, Parsed<Expression<ParsedNode>>),
                      e| AstNode {
                         inner: Expression::BinaryOperation(ast::BinaryOperation {
                             lhs: Box::new(lhs),
                             rhs: Box::new(rhs),
                             op,
                         }),
-                        meta: ParsedMetadata { span: e.span() },
+                        meta: e.span(),
                     },
                 )
                 .boxed();
 
-            let unions = sums
+            let comparisons = sums
+                .clone()
+                .foldl_with(
+                    choice((
+                        symbol!(DoubleEquals).to(BinaryOperator::Equal),
+                        symbol!(Le).to(BinaryOperator::LessThanOrEqual),
+                        symbol!(Ge).to(BinaryOperator::GreaterThanOrEqual),
+                        symbol!(Lt).to(BinaryOperator::LessThan),
+                        symbol!(Gt).to(BinaryOperator::GreaterThan),
+                    ))
+                    .then(sums)
+                    .repeated(),
+                    |lhs: Parsed<Expression<ParsedNode>>,
+                     (op, rhs): (BinaryOperator, Parsed<Expression<ParsedNode>>),
+                     e| AstNode {
+                        inner: Expression::BinaryOperation(ast::BinaryOperation {
+                            lhs: Box::new(lhs),
+                            rhs: Box::new(rhs),
+                            op,
+                        }),
+                        meta: e.span(),
+                    },
+                )
+                .boxed();
+
+            let unions = comparisons
                 .clone()
                 .foldl_with(
                     choice((
                         symbol!(Pipe).to(BinaryOperator::Union),
                         symbol!(BackArrow).to(BinaryOperator::Wire),
                     ))
-                    .then(sums)
+                    .then(comparisons)
                     .repeated(),
-                    |lhs: Parsed<Expression<ParsedMetadata>>,
-                     (op, rhs): (BinaryOperator, Parsed<Expression<ParsedMetadata>>),
+                    |lhs: Parsed<Expression<ParsedNode>>,
+                     (op, rhs): (BinaryOperator, Parsed<Expression<ParsedNode>>),
                      e| AstNode {
                         inner: Expression::BinaryOperation(ast::BinaryOperation {
                             lhs: Box::new(lhs),
                             rhs: Box::new(rhs),
                             op,
                         }),
-                        meta: ParsedMetadata { span: e.span() },
+                        meta: e.span(),
                     },
                 )
                 .boxed();
@@ -425,7 +460,7 @@ where
     )
 }
 
-pub fn pattern_parse<'src, I>() -> impl Parser<'src, I, Parsed<Pattern<ParsedMetadata>>, Extra<'src>>
+pub fn pattern_parse<'src, I>() -> impl Parser<'src, I, Parsed<Pattern<ParsedNode>>, Extra<'src>>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = Span>,
 {
@@ -443,9 +478,19 @@ where
             .spanned_node()
             .boxed();
 
-        let object = ident
-            .then_ignore(symbol!(Colon))
-            .then(pattern.clone())
+        let object_field = ident
+            .then(symbol!(Colon).ignore_then(pattern.clone()).or_not())
+            .map_with(|(name, value), e| {
+                let value = value.unwrap_or_else(|| AstNode {
+                    inner: Pattern::Binding(Ident {
+                        ident: name.clone(),
+                    }),
+                    meta: e.span(),
+                });
+                (name, value)
+            });
+
+        let object = object_field
             .separated_by(symbol!(Comma))
             .allow_trailing()
             .collect::<Vec<_>>()
@@ -469,12 +514,12 @@ where
     })
 }
 
-pub fn type_parse<'src, I>() -> impl Parser<'src, I, Parsed<Type<ParsedMetadata>>, Extra<'src>>
+pub fn type_parse<'src, I>() -> impl Parser<'src, I, Parsed<Type<ParsedNode>>, Extra<'src>>
 where
     I: ValueInput<'src, Token = Token<'src>, Span = Span>,
 {
     recursive(
-        |ty: Recursive<dyn Parser<'src, I, Parsed<Type<ParsedMetadata>>, Extra<'src>>>| {
+        |ty: Recursive<dyn Parser<'src, I, Parsed<Type<ParsedNode>>, Extra<'src>>>| {
             let base = choice((
                 just(Token::Identifier("Node")).to(Type::Node(ast::NodeType)),
                 just(Token::Identifier("Number")).to(Type::Number(ast::NumberType)),
@@ -496,7 +541,7 @@ where
             .collect::<Vec<_>>()
             .try_map(collect_unique)
             .delimited_by(symbol!(OpenCurly), symbol!(ClosedCurly))
-            .map(|fields: BTreeMap<String, Parsed<Type<ParsedMetadata>>>| {
+            .map(|fields: BTreeMap<String, Parsed<Type<ParsedNode>>>| {
                 Type::Object(ast::ObjectType { fields })
             })
             .spanned_node()
@@ -505,7 +550,7 @@ where
             let array = ty
                 .clone()
                 .delimited_by(symbol!(OpenSquare), symbol!(ClosedSquare))
-                .map(|item_type: Parsed<Type<ParsedMetadata>>| {
+                .map(|item_type: Parsed<Type<ParsedNode>>| {
                     Type::Array(ast::ArrayType {
                         item_type: Box::new(item_type),
                     })
@@ -520,9 +565,7 @@ where
                 .allow_trailing()
                 .collect::<Vec<_>>()
                 .delimited_by(symbol!(OpenParenthesis), symbol!(ClosedParenthesis))
-                .map(|types: Vec<Parsed<Type<ParsedMetadata>>>| {
-                    Type::Tuple(ast::TupleType { types })
-                })
+                .map(|types: Vec<Parsed<Type<ParsedNode>>>| Type::Tuple(ast::TupleType { types }))
                 .spanned_node()
                 .boxed();
 
@@ -561,18 +604,18 @@ where
             let optional = atom
                 .foldl_with(
                     symbol!(Question).repeated(),
-                    |inner: Parsed<Type<ParsedMetadata>>, _, e| AstNode {
+                    |inner: Parsed<Type<ParsedNode>>, _, e| AstNode {
                         inner: Type::Optional(ast::OptionalType {
                             inner: Box::new(inner),
                         }),
-                        meta: ParsedMetadata { span: e.span() },
+                        meta: e.span(),
                     },
                 )
                 .boxed();
 
             optional.clone().foldl_with(
                 symbol!(Pipe).ignore_then(optional).repeated(),
-                |lhs: Parsed<Type<ParsedMetadata>>, rhs, e| {
+                |lhs: Parsed<Type<ParsedNode>>, rhs, e| {
                     let options = match lhs.inner {
                         Type::Union(union) => union.options,
                         inner => vec![AstNode {
@@ -585,7 +628,7 @@ where
                         inner: Type::Union(ast::UnionType {
                             options: options.into_iter().chain(std::iter::once(rhs)).collect(),
                         }),
-                        meta: ParsedMetadata { span: e.span() },
+                        meta: e.span(),
                     }
                 },
             )
