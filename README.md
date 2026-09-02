@@ -35,3 +35,20 @@ CURRENT PLAN:
 - Parser: Code -> AST
 - Compiler: AST -> Node Structure
 - Simulator: Simulates Node Structures
+
+## CLI
+
+Run the command through Cargo during development:
+
+```sh
+cargo run -p cli -- check examples/stdlib/voltage_divider.etch
+cargo run -p cli -- run examples/stdlib/voltage_divider.etch
+cargo run -p cli -- simulate examples/stdlib/voltage_divider.etch --steps 10 --delta-time 0.001
+cargo run -p cli -- test examples/stdlib/voltage_divider.etch
+cargo run -p cli -- schematic examples/stdlib/sectioned_system.etch --output schematic.svg
+cargo run -p cli -- display examples/stdlib/rc_response.etch --output-dir displays
+```
+
+The installed binary is named `etch`, so the equivalent installed commands use
+`etch check`, `etch test`, and so on. Imports are resolved relative to the main
+file's directory; bundled `std/*.txt` imports are always available.
