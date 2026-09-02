@@ -90,8 +90,18 @@ dependencies = [
 name = "ast"
 version = "0.1.0"
 dependencies = [
+ "ast_macros",
  "chumsky",
  "derive_more",
+]
+
+[[package]]
+name = "ast_macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
 ]
 
 [[package]]

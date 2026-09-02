@@ -44,28 +44,14 @@ type TransformResult<S, A, E> = Results<AstNode<S, A>, E>;
 pub type Programs<A> = Vec<AstNode<Program<A>, A>>;
 
 type TransformProgramsResult<A, E> = Results<Programs<A>, E>;
+type FromOf<T> = <T as AstTransform>::From;
+type ToOf<T> = <T as AstTransform>::To;
 
 pub trait Transform<T, V>: AstTransform {
     fn transform(
         &mut self,
         from: AstNode<T, Self::From>,
     ) -> Results<AstNode<V, Self::To>, Self::Error>;
-}
-
-impl<T, V, A: AstTransform> Transform<T, V> for A
-where
-    V: From<T>,
-    <Self::To as Ast>::Meta: From<<Self::From as Ast>::Meta>,
-{
-    fn transform(
-        &mut self,
-        from: AstNode<T, Self::From>,
-    ) -> Results<AstNode<V, Self::To>, A::Error> {
-        Results::ok(AstNode {
-            inner: from.inner.into(),
-            meta: <Self::To as Ast>::Meta::from(from.meta),
-        })
-    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -90,39 +76,18 @@ impl<T, A: Ast> AstNode<T, A> {
     }
 }
 
-pub trait AstTransform {
-    type Error;
-    type From: Ast;
-    type To: Ast;
-}
-
-impl<A: AstTransform> Transform<Expression<A::From>, Expression<A::To>> for A
-where
-    Self: Transform<Match<<Self as AstTransform>::From>, Match<<Self as AstTransform>::To>>
-        + Transform<Ident<<Self as AstTransform>::From>, Ident<<Self as AstTransform>::To>>
-        + Transform<Primative, Primative>
-        + Transform<Array<<Self as AstTransform>::From>, Array<<Self as AstTransform>::To>>
-        + Transform<Object<<Self as AstTransform>::From>, Object<<Self as AstTransform>::To>>
-        + Transform<Lambda<<Self as AstTransform>::From>, Lambda<<Self as AstTransform>::To>>
-        + Transform<Node, Node>
-        + Transform<
-            UnaryOperation<<Self as AstTransform>::From>,
-            UnaryOperation<<Self as AstTransform>::To>,
-        > + Transform<
-            BinaryOperation<<Self as AstTransform>::From>,
-            BinaryOperation<<Self as AstTransform>::To>,
-        > + Transform<Call<<Self as AstTransform>::From>, Call<<Self as AstTransform>::To>>
-        + Transform<
-            ObjectAccess<<Self as AstTransform>::From>,
-            ObjectAccess<<Self as AstTransform>::To>,
-        > + Transform<Block<<Self as AstTransform>::From>, Block<<Self as AstTransform>::To>>,
-{
-    fn transform(
-        &mut self,
-        from: AstNode<Expression<A::From>, Self::From>,
-    ) -> Results<AstNode<Expression<A::To>, Self::To>, Self::Error> {
-        todo!()
-    }
+macro_rules! transform_method {
+    ($name:ident, $input:ty, $output:ty) => {
+        fn $name(
+            &mut self,
+            node: AstNode<$input, Self::From>,
+        ) -> TransformResult<$output, Self::To, Self::Error>
+        where
+            Self: Transform<$input, $output>,
+        {
+            self.transform(node)
+        }
+    };
 }
 
 pub trait AstTraverse: AstTransform {
@@ -131,8 +96,7 @@ pub trait AstTraverse: AstTransform {
         programs: Programs<Self::From>,
     ) -> TransformProgramsResult<Self::To, Self::Error>
     where
-        Self: AstTransform
-            + Transform<Program<<Self as AstTransform>::From>, Program<<Self as AstTransform>::To>>,
+        Self: Transform<Program<<Self as AstTransform>::From>, Program<<Self as AstTransform>::To>>,
     {
         programs
             .into_iter()
@@ -155,43 +119,149 @@ pub trait AstTraverse: AstTransform {
         })
     }
 
-    fn transform_primative(
-        &mut self,
-        AstNode { inner, meta }: AstNode<Primative, Self::From>,
-    ) -> TransformResult<Primative, Self::To, Self::Error>
-    where
-        Self: Transform<bool, bool> + Transform<f64, f64> + Transform<String, String>,
-    {
-        match inner {
-            Primative::Boolean(x) => self.dispatch(meta, x, Primative::Boolean),
-            Primative::Number(x) => self.dispatch(meta, x, Primative::Number),
-            Primative::String(x) => self.dispatch(meta, x, Primative::String),
-        }
-    }
+    transform_method!(
+        transform_definition,
+        Definition<FromOf<Self>>,
+        Definition<ToOf<Self>>
+    );
+    transform_method!(
+        transform_type_definition,
+        TypeDefinition<FromOf<Self>>,
+        TypeDefinition<ToOf<Self>>
+    );
+    transform_method!(transform_return, Return<FromOf<Self>>, Return<ToOf<Self>>);
+    transform_method!(transform_match, Match<FromOf<Self>>, Match<ToOf<Self>>);
+    transform_method!(transform_ident, Ident<FromOf<Self>>, Ident<ToOf<Self>>);
+    transform_method!(transform_array, Array<FromOf<Self>>, Array<ToOf<Self>>);
+    transform_method!(transform_object, Object<FromOf<Self>>, Object<ToOf<Self>>);
+    transform_method!(transform_lambda, Lambda<FromOf<Self>>, Lambda<ToOf<Self>>);
+    transform_method!(
+        transform_unary_op,
+        UnaryOperation<FromOf<Self>>,
+        UnaryOperation<ToOf<Self>>
+    );
+    transform_method!(
+        transform_binary_op,
+        BinaryOperation<FromOf<Self>>,
+        BinaryOperation<ToOf<Self>>
+    );
+    transform_method!(transform_call, Call<FromOf<Self>>, Call<ToOf<Self>>);
+    transform_method!(
+        transform_object_access,
+        ObjectAccess<FromOf<Self>>,
+        ObjectAccess<ToOf<Self>>
+    );
+    transform_method!(transform_node, Node, Node);
+    transform_method!(
+        transform_object_pattern,
+        ObjectDestructure<FromOf<Self>>,
+        ObjectDestructure<ToOf<Self>>
+    );
+    transform_method!(
+        transform_array_pattern,
+        ArrayDestructure<FromOf<Self>>,
+        ArrayDestructure<ToOf<Self>>
+    );
+    transform_method!(transform_enum_pattern, EnumDestructure, EnumDestructure);
+    transform_method!(transform_import, Import<FromOf<Self>>, Import<ToOf<Self>>);
+    transform_method!(transform_type_node, NodeType, NodeType);
+    transform_method!(transform_type_number, NumberType, NumberType);
+    transform_method!(transform_type_string, StringType, StringType);
+    transform_method!(transform_type_boolean, BooleanType, BooleanType);
+    transform_method!(transform_type_none, NoneType, NoneType);
+    transform_method!(transform_type_never, NeverType, NeverType);
+    transform_method!(
+        transform_type_object,
+        ObjectType<FromOf<Self>>,
+        ObjectType<ToOf<Self>>
+    );
+    transform_method!(
+        transform_type_array,
+        ArrayType<FromOf<Self>>,
+        ArrayType<ToOf<Self>>
+    );
+    transform_method!(
+        transform_type_optional,
+        OptionalType<FromOf<Self>>,
+        OptionalType<ToOf<Self>>
+    );
+    transform_method!(
+        transform_type_lambda,
+        LambdaType<FromOf<Self>>,
+        LambdaType<ToOf<Self>>
+    );
+    transform_method!(
+        transform_type_union,
+        UnionType<FromOf<Self>>,
+        UnionType<ToOf<Self>>
+    );
+    transform_method!(
+        transform_type_tuple,
+        TupleType<FromOf<Self>>,
+        TupleType<ToOf<Self>>
+    );
+    transform_method!(transform_string, String, String);
+    transform_method!(transform_boolean, bool, bool);
+    transform_method!(transform_number, f64, f64);
+    transform_method!(transform_block, Block<FromOf<Self>>, Block<ToOf<Self>>);
+    transform_method!(
+        transform_expression,
+        Expression<FromOf<Self>>,
+        Expression<ToOf<Self>>
+    );
+    transform_method!(
+        transform_pattern,
+        Pattern<FromOf<Self>>,
+        Pattern<ToOf<Self>>
+    );
+    transform_method!(
+        transform_statement,
+        Statement<FromOf<Self>>,
+        Statement<ToOf<Self>>
+    );
+    transform_method!(
+        transform_program,
+        Program<FromOf<Self>>,
+        Program<ToOf<Self>>
+    );
+    transform_method!(transform_type, Type<FromOf<Self>>, Type<ToOf<Self>>);
+}
 
-    fn transform_expression(
+impl<T: AstTransform> AstTraverse for T {}
+
+pub trait AstTransform {
+    type Error;
+    type From: Ast;
+    type To: Ast;
+}
+
+impl<A: AstTraverse>
+    Transform<Expression<<A as AstTransform>::From>, Expression<<A as AstTransform>::To>> for A
+where
+    A: Transform<Match<<A as AstTransform>::From>, Match<<A as AstTransform>::To>>
+        + Transform<Ident<<A as AstTransform>::From>, Ident<<A as AstTransform>::To>>
+        + Transform<Primative, Primative>
+        + Transform<Array<<A as AstTransform>::From>, Array<<A as AstTransform>::To>>
+        + Transform<Object<<A as AstTransform>::From>, Object<<A as AstTransform>::To>>
+        + Transform<Lambda<<A as AstTransform>::From>, Lambda<<A as AstTransform>::To>>
+        + Transform<Node, Node>
+        + Transform<
+            UnaryOperation<<A as AstTransform>::From>,
+            UnaryOperation<<A as AstTransform>::To>,
+        > + Transform<
+            BinaryOperation<<A as AstTransform>::From>,
+            BinaryOperation<<A as AstTransform>::To>,
+        > + Transform<Call<<A as AstTransform>::From>, Call<<A as AstTransform>::To>>
+        + Transform<ObjectAccess<<A as AstTransform>::From>, ObjectAccess<<A as AstTransform>::To>>
+        + Transform<Block<<A as AstTransform>::From>, Block<<A as AstTransform>::To>>,
+{
+    fn transform(
         &mut self,
-        AstNode { inner, meta }: AstNode<Expression<Self::From>, Self::From>,
-    ) -> TransformResult<Expression<Self::To>, Self::To, Self::Error>
-    where
-        Self: Transform<Match<<Self as AstTransform>::From>, Match<<Self as AstTransform>::To>>
-            + Transform<Ident<<Self as AstTransform>::From>, Ident<<Self as AstTransform>::To>>
-            + Transform<Primative, Primative>
-            + Transform<Array<<Self as AstTransform>::From>, Array<<Self as AstTransform>::To>>
-            + Transform<Object<<Self as AstTransform>::From>, Object<<Self as AstTransform>::To>>
-            + Transform<Lambda<<Self as AstTransform>::From>, Lambda<<Self as AstTransform>::To>>
-            + Transform<Node, Node>
-            + Transform<
-                UnaryOperation<<Self as AstTransform>::From>,
-                UnaryOperation<<Self as AstTransform>::To>,
-            > + Transform<
-                BinaryOperation<<Self as AstTransform>::From>,
-                BinaryOperation<<Self as AstTransform>::To>,
-            > + Transform<Call<<Self as AstTransform>::From>, Call<<Self as AstTransform>::To>>
-            + Transform<
-                ObjectAccess<<Self as AstTransform>::From>,
-                ObjectAccess<<Self as AstTransform>::To>,
-            > + Transform<Block<<Self as AstTransform>::From>, Block<<Self as AstTransform>::To>>,
+        AstNode { inner, meta }: AstNode<
+            Expression<<A as AstTransform>::From>,
+            <A as AstTransform>::From,
+        >,
+    ) -> Results<AstNode<Expression<<A as AstTransform>::To>, <A as AstTransform>::To>, A::Error>
     {
         match inner {
             Expression::Match(x) => self.dispatch(meta, x, Expression::Match),
@@ -208,22 +278,41 @@ pub trait AstTraverse: AstTransform {
             Expression::Block(x) => self.dispatch(meta, x, Expression::Block),
         }
     }
+}
 
-    fn transform_pattern(
+impl<A: AstTraverse> Transform<Primative, Primative> for A
+where
+    A: Transform<bool, bool> + Transform<f64, f64> + Transform<String, String>,
+{
+    fn transform(
+        &mut self,
+        AstNode { inner, meta }: AstNode<Primative, <A as AstTransform>::From>,
+    ) -> Results<AstNode<Primative, Self::To>, A::Error> {
+        match inner {
+            Primative::Boolean(x) => self.dispatch(meta, x, Primative::Boolean),
+            Primative::Number(x) => self.dispatch(meta, x, Primative::Number),
+            Primative::String(x) => self.dispatch(meta, x, Primative::String),
+        }
+    }
+}
+
+impl<A: AstTraverse> Transform<Pattern<<A as AstTransform>::From>, Pattern<<A as AstTransform>::To>>
+    for A
+where
+    A: Transform<
+            ObjectDestructure<<A as AstTransform>::From>,
+            ObjectDestructure<<A as AstTransform>::To>,
+        > + Transform<
+            ArrayDestructure<<A as AstTransform>::From>,
+            ArrayDestructure<<A as AstTransform>::To>,
+        > + Transform<EnumDestructure, EnumDestructure>
+        + Transform<Ident<<A as AstTransform>::From>, Ident<<A as AstTransform>::To>>
+        + Transform<Primative, Primative>,
+{
+    fn transform(
         &mut self,
         AstNode { inner, meta }: AstNode<Pattern<Self::From>, Self::From>,
-    ) -> TransformResult<Pattern<Self::To>, Self::To, Self::Error>
-    where
-        Self: Transform<
-                ObjectDestructure<<Self as AstTransform>::From>,
-                ObjectDestructure<<Self as AstTransform>::To>,
-            > + Transform<
-                ArrayDestructure<<Self as AstTransform>::From>,
-                ArrayDestructure<<Self as AstTransform>::To>,
-            > + Transform<EnumDestructure, EnumDestructure>
-            + Transform<Ident<<Self as AstTransform>::From>, Ident<<Self as AstTransform>::To>>
-            + Transform<Primative, Primative>,
-    {
+    ) -> Results<AstNode<Pattern<Self::To>, Self::To>, A::Error> {
         match inner {
             Pattern::Object(x) => self.dispatch(meta, x, Pattern::Object),
             Pattern::Array(x) => self.dispatch(meta, x, Pattern::Array),
@@ -232,24 +321,21 @@ pub trait AstTraverse: AstTransform {
             Pattern::Primative(x) => self.dispatch(meta, x, Pattern::Primative),
         }
     }
-
-    fn transform_statement(
+}
+impl<A: AstTraverse>
+    Transform<Statement<<A as AstTransform>::From>, Statement<<A as AstTransform>::To>> for A
+where
+    A: Transform<Definition<<A as AstTransform>::From>, Definition<<A as AstTransform>::To>>
+        + Transform<
+            TypeDefinition<<A as AstTransform>::From>,
+            TypeDefinition<<A as AstTransform>::To>,
+        > + Transform<Return<<A as AstTransform>::From>, Return<<A as AstTransform>::To>>
+        + Transform<Expression<<A as AstTransform>::From>, Expression<<A as AstTransform>::To>>,
+{
+    fn transform(
         &mut self,
         AstNode { inner, meta }: AstNode<Statement<Self::From>, Self::From>,
-    ) -> TransformResult<Statement<Self::To>, Self::To, Self::Error>
-    where
-        Self: Transform<
-                Definition<<Self as AstTransform>::From>,
-                Definition<<Self as AstTransform>::To>,
-            > + Transform<
-                TypeDefinition<<Self as AstTransform>::From>,
-                TypeDefinition<<Self as AstTransform>::To>,
-            > + Transform<Return<<Self as AstTransform>::From>, Return<<Self as AstTransform>::To>>
-            + Transform<
-                Expression<<Self as AstTransform>::From>,
-                Expression<<Self as AstTransform>::To>,
-            >,
-    {
+    ) -> Results<AstNode<Statement<Self::To>, Self::To>, A::Error> {
         match inner {
             Statement::Definition(x) => self.dispatch(meta, x, Statement::Definition),
             Statement::TypeDefinition(x) => self.dispatch(meta, x, Statement::TypeDefinition),
@@ -257,54 +343,44 @@ pub trait AstTraverse: AstTransform {
             Statement::Expression(x) => self.dispatch(meta, x, Statement::Expression),
         }
     }
+}
 
-    fn transform_program(
+impl<A: AstTraverse> Transform<Program<<A as AstTransform>::From>, Program<<A as AstTransform>::To>>
+    for A
+where
+    A: Transform<Import<<A as AstTransform>::From>, Import<<A as AstTransform>::To>>
+        + Transform<Statement<<A as AstTransform>::From>, Statement<<A as AstTransform>::To>>,
+{
+    fn transform(
         &mut self,
         AstNode { inner, meta }: AstNode<Program<Self::From>, Self::From>,
-    ) -> TransformResult<Program<Self::To>, Self::To, Self::Error>
-    where
-        Self: Transform<Import<<Self as AstTransform>::From>, Import<<Self as AstTransform>::To>>
-            + Transform<
-                Statement<<Self as AstTransform>::From>,
-                Statement<<Self as AstTransform>::To>,
-            >,
-    {
+    ) -> Results<AstNode<Program<Self::To>, Self::To>, A::Error> {
         match inner {
             Program::Import(x) => self.dispatch(meta, x, Program::Import),
             Program::Statement(x) => self.dispatch(meta, x, Program::Statement),
         }
     }
+}
 
-    fn transform_type(
+impl<A: AstTraverse> Transform<Type<<A as AstTransform>::From>, Type<<A as AstTransform>::To>> for A
+where
+    A: Transform<NodeType, NodeType>
+        + Transform<StringType, StringType>
+        + Transform<NumberType, NumberType>
+        + Transform<BooleanType, BooleanType>
+        + Transform<ObjectType<<A as AstTransform>::From>, ObjectType<<A as AstTransform>::To>>
+        + Transform<LambdaType<<A as AstTransform>::From>, LambdaType<<A as AstTransform>::To>>
+        + Transform<ArrayType<<A as AstTransform>::From>, ArrayType<<A as AstTransform>::To>>
+        + Transform<OptionalType<<A as AstTransform>::From>, OptionalType<<A as AstTransform>::To>>
+        + Transform<UnionType<<A as AstTransform>::From>, UnionType<<A as AstTransform>::To>>
+        + Transform<NoneType, NoneType>
+        + Transform<TupleType<<A as AstTransform>::From>, TupleType<<A as AstTransform>::To>>
+        + Transform<NeverType, NeverType>,
+{
+    fn transform(
         &mut self,
         AstNode { inner, meta }: AstNode<Type<Self::From>, Self::From>,
-    ) -> TransformResult<Type<Self::To>, Self::To, Self::Error>
-    where
-        Self: Transform<NodeType, NodeType>
-            + Transform<StringType, StringType>
-            + Transform<NumberType, NumberType>
-            + Transform<BooleanType, BooleanType>
-            + Transform<
-                ObjectType<<Self as AstTransform>::From>,
-                ObjectType<<Self as AstTransform>::To>,
-            > + Transform<
-                LambdaType<<Self as AstTransform>::From>,
-                LambdaType<<Self as AstTransform>::To>,
-            > + Transform<
-                ArrayType<<Self as AstTransform>::From>,
-                ArrayType<<Self as AstTransform>::To>,
-            > + Transform<
-                OptionalType<<Self as AstTransform>::From>,
-                OptionalType<<Self as AstTransform>::To>,
-            > + Transform<
-                UnionType<<Self as AstTransform>::From>,
-                UnionType<<Self as AstTransform>::To>,
-            > + Transform<NoneType, NoneType>
-            + Transform<
-                TupleType<<Self as AstTransform>::From>,
-                TupleType<<Self as AstTransform>::To>,
-            > + Transform<NeverType, NeverType>,
-    {
+    ) -> Results<AstNode<Type<Self::To>, Self::To>, A::Error> {
         match inner {
             Type::Node(x) => self.dispatch(meta, x, Type::Node),
             Type::String(x) => self.dispatch(meta, x, Type::String),
@@ -321,5 +397,3 @@ pub trait AstTraverse: AstTransform {
         }
     }
 }
-
-impl<T: AstTransform> AstTraverse for T {}

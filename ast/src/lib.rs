@@ -13,6 +13,7 @@ use chumsky::span::SimpleSpan;
 pub type Span = SimpleSpan;
 
 pub use ast::*;
+pub use ast_macros::transformer;
 pub use expression::*;
 pub use pattern::*;
 pub use primative::*;
