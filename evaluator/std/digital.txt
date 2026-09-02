@@ -1,6 +1,7 @@
 export let NotGate = (threshold: Number, low: Number, high: Number) -> {
     let input = use_node();
     let output = use_node();
+    use_symbol(kind: "not-gate", ports: { input, output });
     use_equation(equation: () -> {
         let level = match voltage(node: input) > threshold {
             true -> low,
@@ -15,6 +16,7 @@ export let AndGate = (threshold: Number, low: Number, high: Number) -> {
     let a = use_node();
     let b = use_node();
     let output = use_node();
+    use_symbol(kind: "and-gate", ports: { a, b, output });
     use_equation(equation: () -> {
         let level = match voltage(node: a) > threshold {
             true -> match voltage(node: b) > threshold {
@@ -32,6 +34,7 @@ export let OrGate = (threshold: Number, low: Number, high: Number) -> {
     let a = use_node();
     let b = use_node();
     let output = use_node();
+    use_symbol(kind: "or-gate", ports: { a, b, output });
     use_equation(equation: () -> {
         let level = match voltage(node: a) > threshold {
             true -> high,
@@ -49,6 +52,7 @@ export let NandGate = (threshold: Number, low: Number, high: Number) -> {
     let a = use_node();
     let b = use_node();
     let output = use_node();
+    use_symbol(kind: "nand-gate", ports: { a, b, output });
     use_equation(equation: () -> {
         let level = match voltage(node: a) > threshold {
             true -> match voltage(node: b) > threshold {
@@ -66,6 +70,7 @@ export let NorGate = (threshold: Number, low: Number, high: Number) -> {
     let a = use_node();
     let b = use_node();
     let output = use_node();
+    use_symbol(kind: "nor-gate", ports: { a, b, output });
     use_equation(equation: () -> {
         let level = match voltage(node: a) > threshold {
             true -> low,
@@ -83,6 +88,7 @@ export let DFlipFlop = (threshold: Number, low: Number, high: Number) -> {
     let d = use_node();
     let clock = use_node();
     let q = use_node();
+    use_symbol(kind: "d-flip-flop", ports: { d, clock, q });
     let previous_clock = use_state(initial: false);
     let stored = use_state(initial: false);
     use_equation(equation: () -> {

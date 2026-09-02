@@ -1,6 +1,7 @@
 export let VoltageSource = (value: Number) -> {
     let positive = use_node();
     let negative = use_node();
+    use_symbol(kind: "voltage-source", ports: { positive, negative }, value: value);
     use_equation(equation: () -> {
         fix_voltage(node: negative, value: 0);
         fix_voltage(node: positive, value: value)
@@ -10,6 +11,7 @@ export let VoltageSource = (value: Number) -> {
 
 export let Ground = () -> {
     let node = use_node();
+    use_symbol(kind: "ground", ports: { node });
     use_equation(equation: () -> fix_voltage(node: node, value: 0));
     return { node };
 };
@@ -17,6 +19,7 @@ export let Ground = () -> {
 export let CurrentSource = (value: Number) -> {
     let positive = use_node();
     let negative = use_node();
+    use_symbol(kind: "current-source", ports: { positive, negative }, value: value);
     use_equation(equation: () -> current(
         between: [positive, negative],
         value: value,

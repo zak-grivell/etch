@@ -1,0 +1,38 @@
+from "std/sources.txt" import { VoltageSource, Ground };
+from "std/passive.txt" import { Capacitor, Resistor };
+
+let supply = VoltageSource(value: 1);
+let ground = Ground();
+let coupling = Capacitor(capacitance: 0.000001);
+let load = Resistor(resistance: 100);
+
+supply.positive <- coupling.a;
+coupling.b <- load.a;
+load.b <- ground.node;
+
+test(name: "capacitor produces a decaying step response", body: () -> {
+    simulate(steps: 1, delta_time: 0.001);
+    assert_close(
+        actual: voltage(node: coupling.b),
+        expected: 0.0909090909,
+        tolerance: 0.000001,
+    );
+    simulate(steps: 1, delta_time: 0.001);
+    assert_close(
+        actual: voltage(node: coupling.b),
+        expected: 0.0082644628,
+        tolerance: 0.000001,
+    )
+});
+
+display(
+    name: "RC transient response",
+    steps: 20,
+    delta_time: 0.001,
+    traces: {
+        input: () -> voltage(node: coupling.a),
+        output: () -> voltage(node: coupling.b),
+    },
+);
+
+{ input: coupling.a, output: coupling.b }

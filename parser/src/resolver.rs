@@ -61,6 +61,10 @@ impl SymbolResolver {
             "assert",
             "assert_close",
             "simulate",
+            "use_symbol",
+            "section",
+            "net",
+            "display",
         ];
         let builtins = builtin_names
             .into_iter()

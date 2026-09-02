@@ -495,3 +495,124 @@ fn rejects_duplicate_language_test_names() {
         Err(RunError::Evaluation(error)) if error.message == "duplicate test name `duplicate`"
     ));
 }
+
+#[test]
+fn standard_library_examples_are_executable_tests() {
+    let examples = [
+        (
+            "voltage_divider.etch",
+            include_str!("../../examples/stdlib/voltage_divider.etch"),
+        ),
+        (
+            "rc_response.etch",
+            include_str!("../../examples/stdlib/rc_response.etch"),
+        ),
+        (
+            "op_amp.etch",
+            include_str!("../../examples/stdlib/op_amp.etch"),
+        ),
+        (
+            "logic_gates.etch",
+            include_str!("../../examples/stdlib/logic_gates.etch"),
+        ),
+        (
+            "d_flip_flop.etch",
+            include_str!("../../examples/stdlib/d_flip_flop.etch"),
+        ),
+        (
+            "sectioned_system.etch",
+            include_str!("../../examples/stdlib/sectioned_system.etch"),
+        ),
+    ];
+
+    for (filename, source) in examples {
+        let output = evaluate(&Sources::single(source))
+            .unwrap_or_else(|error| panic!("{filename} failed to evaluate: {error:?}"));
+        let results = output.run_tests();
+        assert!(
+            !results.is_empty(),
+            "{filename} does not register any tests"
+        );
+        for result in results {
+            assert!(
+                result.result.is_ok(),
+                "{}: test `{}` failed: {:?}",
+                filename,
+                result.name,
+                result.result.err()
+            );
+        }
+    }
+}
+
+#[test]
+fn generates_sectioned_svg_schematics_and_custom_symbols() {
+    let source = include_str!("../../examples/stdlib/sectioned_system.etch");
+    let output = evaluate(&Sources::single(source)).unwrap();
+    let svg = output.circuit.schematic_svg();
+
+    assert!(svg.starts_with("<svg"));
+    assert!(svg.ends_with("</svg>\n"));
+    assert!(svg.contains("symbol-voltage-source"));
+    assert!(svg.contains("symbol-resistor"));
+    assert!(svg.contains("Power supply"));
+    assert!(svg.contains("Sensor divider"));
+    assert!(svg.contains(">VCC</text>"));
+    assert!(svg.contains(">GND</text>"));
+
+    let custom = r#"
+        let input = use_node();
+        let output = use_node();
+        use_symbol(
+            kind: "custom-sensor",
+            label: "U&amp;1",
+            ports: { input, output },
+            svg: "<circle cx='0' cy='0' r='20'/>",
+        );
+    "#;
+    let output = evaluate(&Sources::single(custom)).unwrap();
+    let svg = output.circuit.schematic_svg();
+    assert!(svg.contains("<symbol id=\"custom-0\""));
+    assert!(svg.contains("<circle cx='0' cy='0' r='20'/>"));
+    assert!(svg.contains("U&amp;amp;1"));
+}
+
+#[test]
+fn samples_and_renders_registered_displays() {
+    let source = include_str!("../../examples/stdlib/rc_response.etch");
+    let output = evaluate(&Sources::single(source)).unwrap();
+    assert_eq!(output.circuit.display_count(), 1);
+    assert_eq!(output.circuit.time(), 0.0);
+
+    let displays = output.run_displays();
+    assert_eq!(displays.len(), 1);
+    assert_eq!(displays[0].name, "RC transient response");
+    let graph = displays[0].result.as_ref().unwrap();
+    assert_eq!(graph.traces.len(), 2);
+    assert!(graph.traces.iter().all(|trace| trace.samples.len() == 21));
+    assert!(graph.svg.starts_with("<svg"));
+    assert!(graph.svg.contains("RC transient response"));
+    assert!(graph.svg.contains("class=\"grid\""));
+    assert!(graph.svg.contains(">input</text>"));
+    assert!(graph.svg.contains(">output</text>"));
+    assert_eq!(output.circuit.time(), 0.0);
+}
+
+#[test]
+fn reports_display_trace_errors_without_mutating_the_circuit() {
+    let source = r#"
+        display(
+            name: "invalid trace",
+            steps: 2,
+            delta_time: 0.001,
+            traces: { status: () -> true },
+        );
+    "#;
+    let output = evaluate(&Sources::single(source)).unwrap();
+    let displays = output.run_displays();
+    assert!(matches!(
+        &displays[0].result,
+        Err(error) if error.message == "display trace `status` must return a number"
+    ));
+    assert_eq!(output.circuit.time(), 0.0);
+}

@@ -1,6 +1,7 @@
 export let Resistor = (resistance: Number) -> {
     let a = use_node();
     let b = use_node();
+    use_symbol(kind: "resistor", ports: { a, b }, value: resistance);
     use_equation(equation: () -> conductance(
         between: [a, b],
         value: 1 / resistance,
@@ -11,6 +12,7 @@ export let Resistor = (resistance: Number) -> {
 export let Capacitor = (capacitance: Number) -> {
     let a = use_node();
     let b = use_node();
+    use_symbol(kind: "capacitor", ports: { a, b }, value: capacitance);
     let previous_voltage = use_state(initial: 0);
     use_equation(equation: () -> {
         let across = voltage(node: a) - voltage(node: b);
@@ -28,6 +30,7 @@ export let Capacitor = (capacitance: Number) -> {
 export let Inductor = (inductance: Number) -> {
     let a = use_node();
     let b = use_node();
+    use_symbol(kind: "inductor", ports: { a, b }, value: inductance);
     let stored_current = use_state(initial: 0);
     use_equation(equation: () -> {
         current(between: [a, b], value: stored_current.get());
@@ -44,6 +47,7 @@ export let Inductor = (inductance: Number) -> {
 export let Switch = (closed: Bool, on_resistance: Number, off_resistance: Number) -> {
     let a = use_node();
     let b = use_node();
+    use_symbol(kind: "switch", ports: { a, b });
     use_equation(equation: () -> {
         let resistance = match closed {
             true -> on_resistance,

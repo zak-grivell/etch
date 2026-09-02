@@ -1,0 +1,31 @@
+from "std/sources.txt" import { VoltageSource };
+from "std/digital.txt" import { NotGate, AndGate };
+
+let high = VoltageSource(value: 5);
+let low = VoltageSource(value: 0);
+let inverter = NotGate(threshold: 2.5, low: 0, high: 5);
+let and_gate = AndGate(threshold: 2.5, low: 0, high: 5);
+
+high.positive <- inverter.input;
+high.positive <- and_gate.a;
+low.positive <- and_gate.b;
+
+test(name: "not gate inverts a high input", body: () -> {
+    simulate(steps: 1, delta_time: 0.001);
+    assert_close(
+        actual: voltage(node: inverter.output),
+        expected: 0,
+        tolerance: 0.000001,
+    )
+});
+
+test(name: "and gate requires both inputs high", body: () -> {
+    simulate(steps: 1, delta_time: 0.001);
+    assert_close(
+        actual: voltage(node: and_gate.output),
+        expected: 0,
+        tolerance: 0.000001,
+    )
+});
+
+{ inverted: inverter.output, conjunction: and_gate.output }

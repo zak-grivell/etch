@@ -1,0 +1,22 @@
+from "std/sources.txt" import { VoltageSource, Ground };
+from "std/passive.txt" import { Resistor };
+
+let supply = VoltageSource(value: 5);
+let ground = Ground();
+let upper = Resistor(resistance: 1000);
+let lower = Resistor(resistance: 1000);
+
+supply.positive <- upper.a;
+upper.b <- lower.a;
+lower.b <- ground.node;
+
+test(name: "equal resistors divide voltage in half", body: () -> {
+    simulate(steps: 1, delta_time: 0.001);
+    assert_close(
+        actual: voltage(node: upper.b),
+        expected: 2.5,
+        tolerance: 0.000001,
+    )
+});
+
+{ input: upper.a, output: upper.b, ground: lower.b }

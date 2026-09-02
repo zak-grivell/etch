@@ -9,6 +9,9 @@ use ast::{
 };
 use parser::{PartialMetadata, Symbol, TypedProgram};
 
+mod graph;
+mod schematic;
+
 #[cfg(test)]
 mod test;
 
@@ -32,6 +35,11 @@ struct CircuitState {
     delta_time: f64,
     states: BTreeMap<u64, StateSlot>,
     tests: Vec<LanguageTest>,
+    schematic_components: Vec<SchematicComponent>,
+    net_labels: BTreeMap<String, Vec<u64>>,
+    sections: Vec<String>,
+    current_section: Option<String>,
+    displays: Vec<LanguageDisplay>,
 }
 
 #[derive(Clone, Debug)]
@@ -44,6 +52,24 @@ struct StateSlot {
 struct LanguageTest {
     name: String,
     body: LambdaValue,
+}
+
+#[derive(Clone, Debug)]
+struct SchematicComponent {
+    kind: String,
+    label: Option<String>,
+    value: Option<String>,
+    ports: BTreeMap<String, u64>,
+    section: Option<String>,
+    svg: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct LanguageDisplay {
+    name: String,
+    steps: usize,
+    delta_time: f64,
+    traces: BTreeMap<String, LambdaValue>,
 }
 
 impl fmt::Debug for Circuit {
@@ -93,6 +119,15 @@ impl Circuit {
             .unwrap_or(0.0)
     }
 
+    pub fn node_voltages(&self) -> Vec<(u64, f64)> {
+        self.inner
+            .borrow()
+            .voltages
+            .iter()
+            .map(|(id, voltage)| (*id, *voltage))
+            .collect()
+    }
+
     pub fn time(&self) -> f64 {
         self.inner.borrow().time
     }
@@ -118,6 +153,65 @@ impl Circuit {
             .collect();
         *self.inner.borrow_mut() = baseline;
         results
+    }
+
+    pub fn schematic_svg(&self) -> String {
+        schematic::render(&self.inner.borrow())
+    }
+
+    pub fn display_count(&self) -> usize {
+        self.inner.borrow().displays.len()
+    }
+
+    pub fn run_displays(&self) -> Vec<DisplayResult> {
+        let baseline = self.inner.borrow().clone();
+        let displays = baseline.displays.clone();
+        let results = displays
+            .into_iter()
+            .map(|display| {
+                *self.inner.borrow_mut() = baseline.clone();
+                DisplayResult {
+                    name: display.name.clone(),
+                    result: self.run_display(display),
+                }
+            })
+            .collect();
+        *self.inner.borrow_mut() = baseline;
+        results
+    }
+
+    fn run_display(&self, display: LanguageDisplay) -> Result<DisplayOutput, EvaluationError> {
+        let mut traces = display
+            .traces
+            .keys()
+            .map(|name| (name.clone(), Vec::with_capacity(display.steps + 1)))
+            .collect::<BTreeMap<_, _>>();
+        for step in 0..=display.steps {
+            let sample_time = self.time();
+            for (name, trace) in &display.traces {
+                let value = Evaluator::new(self.clone()).call(
+                    trace.clone(),
+                    BTreeMap::new(),
+                    Span::default(),
+                )?;
+                let Value::Number(value) = value else {
+                    return Err(EvaluationError {
+                        span: Span::default(),
+                        message: format!("display trace `{name}` must return a number"),
+                    });
+                };
+                traces.get_mut(name).unwrap().push((sample_time, value));
+            }
+            if step < display.steps {
+                self.simulate(1, display.delta_time)?;
+            }
+        }
+        let traces = traces
+            .into_iter()
+            .map(|(name, samples)| TraceSeries { name, samples })
+            .collect::<Vec<_>>();
+        let svg = graph::render(&display.name, &traces);
+        Ok(DisplayOutput { traces, svg })
     }
 
     pub fn simulate(&self, steps: usize, delta_time: f64) -> Result<(), EvaluationError> {
@@ -302,6 +396,10 @@ enum NativeFunctionKind {
     Assert,
     AssertClose,
     Simulate,
+    UseSymbol,
+    Section,
+    Net,
+    Display,
 }
 
 impl PartialEq for Value {
@@ -348,12 +446,38 @@ impl EvaluationOutput {
     pub fn run_tests(&self) -> Vec<TestResult> {
         self.circuit.run_tests()
     }
+
+    pub fn schematic_svg(&self) -> String {
+        self.circuit.schematic_svg()
+    }
+
+    pub fn run_displays(&self) -> Vec<DisplayResult> {
+        self.circuit.run_displays()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TestResult {
     pub name: String,
     pub result: Result<(), EvaluationError>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayResult {
+    pub name: String,
+    pub result: Result<DisplayOutput, EvaluationError>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayOutput {
+    pub traces: Vec<TraceSeries>,
+    pub svg: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TraceSeries {
+    pub name: String,
+    pub samples: Vec<(f64, f64)>,
 }
 
 impl From<EvaluationError> for RunError {
@@ -506,6 +630,10 @@ impl Evaluator {
             (13, "assert", NativeFunctionKind::Assert),
             (14, "assert_close", NativeFunctionKind::AssertClose),
             (15, "simulate", NativeFunctionKind::Simulate),
+            (16, "use_symbol", NativeFunctionKind::UseSymbol),
+            (17, "section", NativeFunctionKind::Section),
+            (18, "net", NativeFunctionKind::Net),
+            (19, "display", NativeFunctionKind::Display),
         ];
         for (id, name, kind) in builtins {
             scope.set(
@@ -1099,6 +1227,178 @@ impl Evaluator {
                 function.circuit.simulate(steps as usize, delta_time)?;
                 Ok(Value::None)
             }
+            NativeFunctionKind::UseSymbol => {
+                let kind = match args.remove("kind") {
+                    Some(Value::String(kind)) => kind,
+                    Some(_) => {
+                        return Err(self.error(span, "use_symbol argument `kind` must be a string"));
+                    }
+                    None => return Err(missing("kind")),
+                };
+                let ports = match args.remove("ports") {
+                    Some(Value::Object(ports)) => ports,
+                    Some(_) => {
+                        return Err(
+                            self.error(span, "use_symbol argument `ports` must be an object")
+                        );
+                    }
+                    None => return Err(missing("ports")),
+                };
+                let mut resolved_ports = BTreeMap::new();
+                for (name, value) in ports {
+                    let port = node(Some(value), &format!("ports.{name}"))?;
+                    if !Rc::ptr_eq(&port.circuit.inner, &function.circuit.inner) {
+                        return Err(self.error(span, "symbol port belongs to another circuit"));
+                    }
+                    resolved_ports.insert(name, port.id);
+                }
+                let label = self.optional_string(args.remove("label"), "label", span)?;
+                let value = args.remove("value").map(|value| self.display_value(&value));
+                let svg = self.optional_string(args.remove("svg"), "svg", span)?;
+                self.ensure_no_args(&args, span)?;
+                let mut circuit = function.circuit.inner.borrow_mut();
+                let section = circuit.current_section.clone();
+                circuit.schematic_components.push(SchematicComponent {
+                    kind,
+                    label,
+                    value,
+                    ports: resolved_ports,
+                    section,
+                    svg,
+                });
+                Ok(Value::None)
+            }
+            NativeFunctionKind::Section => {
+                let name = match args.remove("name") {
+                    Some(Value::String(name)) => name,
+                    Some(_) => {
+                        return Err(self.error(span, "section argument `name` must be a string"));
+                    }
+                    None => return Err(missing("name")),
+                };
+                let body = match args.remove("body") {
+                    Some(Value::Lambda(body)) => body,
+                    Some(_) => {
+                        return Err(self.error(span, "section argument `body` must be a lambda"));
+                    }
+                    None => return Err(missing("body")),
+                };
+                self.ensure_no_args(&args, span)?;
+                let previous = {
+                    let mut circuit = function.circuit.inner.borrow_mut();
+                    if !circuit.sections.contains(&name) {
+                        circuit.sections.push(name.clone());
+                    }
+                    circuit.current_section.replace(name)
+                };
+                let result = self.call(body, BTreeMap::new(), span);
+                function.circuit.inner.borrow_mut().current_section = previous;
+                result
+            }
+            NativeFunctionKind::Net => {
+                let label = match args.remove("label") {
+                    Some(Value::String(label)) => label,
+                    Some(_) => {
+                        return Err(self.error(span, "net argument `label` must be a string"));
+                    }
+                    None => return Err(missing("label")),
+                };
+                let node = node(args.remove("node"), "node")?;
+                self.ensure_no_args(&args, span)?;
+                let existing = function
+                    .circuit
+                    .inner
+                    .borrow()
+                    .net_labels
+                    .get(&label)
+                    .and_then(|nodes| nodes.first().copied());
+                if let Some(existing) = existing {
+                    function.circuit.connect(existing, node.id);
+                }
+                let mut circuit = function.circuit.inner.borrow_mut();
+                let nodes = circuit.net_labels.entry(label).or_default();
+                if !nodes.contains(&node.id) {
+                    nodes.push(node.id);
+                }
+                Ok(Value::Node(node))
+            }
+            NativeFunctionKind::Display => {
+                let name = match args.remove("name") {
+                    Some(Value::String(name)) => name,
+                    Some(_) => {
+                        return Err(self.error(span, "display argument `name` must be a string"));
+                    }
+                    None => return Err(missing("name")),
+                };
+                let steps = number(args.remove("steps"), "steps")?;
+                if !steps.is_finite() || steps < 1.0 || steps.fract() != 0.0 || steps > 1_000_000.0
+                {
+                    return Err(self.error(
+                        span,
+                        "display argument `steps` must be an integer from 1 to 1000000",
+                    ));
+                }
+                let delta_time = number(args.remove("delta_time"), "delta_time")?;
+                if !delta_time.is_finite() || delta_time <= 0.0 {
+                    return Err(self.error(
+                        span,
+                        "display argument `delta_time` must be positive and finite",
+                    ));
+                }
+                let values = match args.remove("traces") {
+                    Some(Value::Object(values)) => values,
+                    Some(_) => {
+                        return Err(self.error(span, "display argument `traces` must be an object"));
+                    }
+                    None => return Err(missing("traces")),
+                };
+                if values.is_empty() {
+                    return Err(self.error(span, "display requires at least one trace"));
+                }
+                let mut traces = BTreeMap::new();
+                for (name, value) in values {
+                    let Value::Lambda(trace) = value else {
+                        return Err(
+                            self.error(span, format!("display trace `{name}` must be a lambda"))
+                        );
+                    };
+                    traces.insert(name, trace);
+                }
+                self.ensure_no_args(&args, span)?;
+                let mut circuit = function.circuit.inner.borrow_mut();
+                if circuit.displays.iter().any(|display| display.name == name) {
+                    return Err(self.error(span, format!("duplicate display name `{name}`")));
+                }
+                circuit.displays.push(LanguageDisplay {
+                    name,
+                    steps: steps as usize,
+                    delta_time,
+                    traces,
+                });
+                Ok(Value::None)
+            }
+        }
+    }
+
+    fn optional_string(
+        &self,
+        value: Option<Value>,
+        name: &str,
+        span: Span,
+    ) -> Result<Option<String>, EvaluationError> {
+        match value {
+            Some(Value::String(value)) => Ok(Some(value)),
+            Some(_) => Err(self.error(span, format!("argument `{name}` must be a string"))),
+            None => Ok(None),
+        }
+    }
+
+    fn display_value(&self, value: &Value) -> String {
+        match value {
+            Value::Number(value) => value.to_string(),
+            Value::String(value) => value.clone(),
+            Value::Boolean(value) => value.to_string(),
+            _ => format!("{value:?}"),
         }
     }
 

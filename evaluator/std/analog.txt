@@ -2,6 +2,11 @@ export let OpAmp = (gain: Number, low: Number, high: Number, output_conductance:
     let positive = use_node();
     let negative = use_node();
     let output = use_node();
+    use_symbol(
+        kind: "op-amp",
+        ports: { positive, negative, output },
+        value: gain,
+    );
     use_equation(equation: () -> {
         let raw = gain * (voltage(node: positive) - voltage(node: negative));
         let limited = match raw {
@@ -21,6 +26,7 @@ export let OpAmp = (gain: Number, low: Number, high: Number, output_conductance:
 export let Comparator = (threshold: Number, low: Number, high: Number) -> {
     let input = use_node();
     let output = use_node();
+    use_symbol(kind: "comparator", ports: { input, output }, value: threshold);
     use_equation(equation: () -> {
         let level = match voltage(node: input) > threshold {
             true -> high,
@@ -34,6 +40,7 @@ export let Comparator = (threshold: Number, low: Number, high: Number) -> {
 export let Diode = (forward_voltage: Number, on_resistance: Number, off_resistance: Number) -> {
     let anode = use_node();
     let cathode = use_node();
+    use_symbol(kind: "diode", ports: { anode, cathode }, value: forward_voltage);
     use_equation(equation: () -> {
         let resistance = match voltage(node: anode) - voltage(node: cathode) > forward_voltage {
             true -> on_resistance,
@@ -44,4 +51,16 @@ export let Diode = (forward_voltage: Number, on_resistance: Number, off_resistan
     return { anode, cathode };
 };
 
-export let Led = Diode;
+export let Led = (forward_voltage: Number, on_resistance: Number, off_resistance: Number) -> {
+    let anode = use_node();
+    let cathode = use_node();
+    use_symbol(kind: "led", ports: { anode, cathode }, value: forward_voltage);
+    use_equation(equation: () -> {
+        let resistance = match voltage(node: anode) - voltage(node: cathode) > forward_voltage {
+            true -> on_resistance,
+            false -> off_resistance,
+        };
+        conductance(between: [anode, cathode], value: 1 / resistance)
+    });
+    return { anode, cathode };
+};

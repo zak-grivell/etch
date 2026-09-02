@@ -1,0 +1,26 @@
+from "std/sources.txt" import { VoltageSource };
+from "std/digital.txt" import { DFlipFlop };
+
+let high_data = VoltageSource(value: 5);
+let high_clock = VoltageSource(value: 5);
+let flip_flop = DFlipFlop(threshold: 2.5, low: 0, high: 5);
+
+high_data.positive <- flip_flop.d;
+high_clock.positive <- flip_flop.clock;
+
+test(name: "flip flop captures data on a rising edge", body: () -> {
+    simulate(steps: 1, delta_time: 0.001);
+    assert_close(
+        actual: voltage(node: flip_flop.q),
+        expected: 0,
+        tolerance: 0.000001,
+    );
+    simulate(steps: 1, delta_time: 0.001);
+    assert_close(
+        actual: voltage(node: flip_flop.q),
+        expected: 5,
+        tolerance: 0.000001,
+    )
+});
+
+{ q: flip_flop.q }

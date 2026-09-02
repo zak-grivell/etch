@@ -1,0 +1,32 @@
+from "std/sources.txt" import { VoltageSource, Ground };
+from "std/passive.txt" import { Resistor };
+
+let power = section(name: "Power supply", body: () -> {
+    let supply = VoltageSource(value: 5);
+    let ground = Ground();
+    net(label: "VCC", node: supply.positive);
+    net(label: "GND", node: supply.negative);
+    net(label: "GND", node: ground.node);
+    return { supply, ground };
+});
+
+let sensor = section(name: "Sensor divider", body: () -> {
+    let upper = Resistor(resistance: 1000);
+    let lower = Resistor(resistance: 1000);
+    upper.b <- lower.a;
+    net(label: "VCC", node: upper.a);
+    net(label: "GND", node: lower.b);
+    net(label: "SENSE", node: upper.b);
+    return { upper, lower };
+});
+
+test(name: "net labels connect circuit sections", body: () -> {
+    simulate(steps: 1, delta_time: 0.001);
+    assert_close(
+        actual: voltage(node: sensor.upper.b),
+        expected: 2.5,
+        tolerance: 0.000001,
+    )
+});
+
+{ power, sensor }

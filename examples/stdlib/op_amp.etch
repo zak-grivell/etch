@@ -1,0 +1,25 @@
+from "std/sources.txt" import { VoltageSource };
+from "std/analog.txt" import { OpAmp };
+
+let positive_input = VoltageSource(value: 0.01);
+let negative_input = VoltageSource(value: 0);
+let amplifier = OpAmp(
+    gain: 100,
+    low: -5,
+    high: 5,
+    output_conductance: 1000,
+);
+
+positive_input.positive <- amplifier.positive;
+negative_input.positive <- amplifier.negative;
+
+test(name: "op amp follows its differential equation", body: () -> {
+    simulate(steps: 1, delta_time: 0.001);
+    assert_close(
+        actual: voltage(node: amplifier.output),
+        expected: 1,
+        tolerance: 0.000001,
+    )
+});
+
+{ output: amplifier.output }
