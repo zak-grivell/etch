@@ -392,3 +392,55 @@ fn hook_style_state_models_a_rising_edge_flip_flop() {
     output.circuit.simulate(1, 0.001).unwrap();
     assert_eq!(output.circuit.voltage(q), 5.0);
 }
+
+#[test]
+fn registers_and_runs_language_tests() {
+    let source = r#"
+        let Source = (value: Number) -> {
+            let out = use_node();
+            use_equation(equation: () -> fix_voltage(node: out, value: value));
+            return { out };
+        };
+
+        let source = Source(value: 3.3);
+
+        test(name: "source reaches its requested voltage", body: () -> {
+            simulate(steps: 1, delta_time: 0.001);
+            assert_close(
+                actual: voltage(node: source.out),
+                expected: 3.3,
+                tolerance: 0.000001,
+            )
+        });
+
+        test(name: "failure messages are reported", body: () -> {
+            assert(condition: false, message: "deliberate failure")
+        });
+    "#;
+    let output = evaluate(&Sources::single(source)).unwrap();
+    assert_eq!(output.circuit.test_count(), 2);
+    assert_eq!(output.circuit.time(), 0.0);
+
+    let results = output.run_tests();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].name, "source reaches its requested voltage");
+    assert!(results[0].result.is_ok());
+    assert_eq!(results[1].name, "failure messages are reported");
+    assert!(matches!(
+        &results[1].result,
+        Err(error) if error.message == "deliberate failure"
+    ));
+    assert_eq!(output.circuit.time(), 0.0);
+}
+
+#[test]
+fn rejects_duplicate_language_test_names() {
+    let source = r#"
+        test(name: "duplicate", body: () -> true);
+        test(name: "duplicate", body: () -> true);
+    "#;
+    assert!(matches!(
+        evaluate(&Sources::single(source)),
+        Err(RunError::Evaluation(error)) if error.message == "duplicate test name `duplicate`"
+    ));
+}

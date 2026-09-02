@@ -17,7 +17,7 @@ pub struct Circuit {
     inner: Rc<RefCell<CircuitState>>,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct CircuitState {
     next_node_id: u64,
     next_state_id: u64,
@@ -31,12 +31,19 @@ struct CircuitState {
     time: f64,
     delta_time: f64,
     states: BTreeMap<u64, StateSlot>,
+    tests: Vec<LanguageTest>,
 }
 
 #[derive(Clone, Debug)]
 struct StateSlot {
     current: Value,
     pending: Option<Value>,
+}
+
+#[derive(Clone, Debug)]
+struct LanguageTest {
+    name: String,
+    body: LambdaValue,
 }
 
 impl fmt::Debug for Circuit {
@@ -88,6 +95,29 @@ impl Circuit {
 
     pub fn time(&self) -> f64 {
         self.inner.borrow().time
+    }
+
+    pub fn test_count(&self) -> usize {
+        self.inner.borrow().tests.len()
+    }
+
+    pub fn run_tests(&self) -> Vec<TestResult> {
+        let baseline = self.inner.borrow().clone();
+        let tests = baseline.tests.clone();
+        let results = tests
+            .into_iter()
+            .map(|test| {
+                *self.inner.borrow_mut() = baseline.clone();
+                TestResult {
+                    name: test.name,
+                    result: Evaluator::new(self.clone())
+                        .call(test.body, BTreeMap::new(), Span::default())
+                        .map(|_| ()),
+                }
+            })
+            .collect();
+        *self.inner.borrow_mut() = baseline;
+        results
     }
 
     pub fn simulate(&self, steps: usize, delta_time: f64) -> Result<(), EvaluationError> {
@@ -268,6 +298,10 @@ enum NativeFunctionKind {
     DeltaTime,
     StateGet(u64),
     StateSet(u64),
+    Test,
+    Assert,
+    AssertClose,
+    Simulate,
 }
 
 impl PartialEq for Value {
@@ -308,6 +342,18 @@ pub enum RunError {
 pub struct EvaluationOutput {
     pub values: Vec<Value>,
     pub circuit: Circuit,
+}
+
+impl EvaluationOutput {
+    pub fn run_tests(&self) -> Vec<TestResult> {
+        self.circuit.run_tests()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TestResult {
+    pub name: String,
+    pub result: Result<(), EvaluationError>,
 }
 
 impl From<EvaluationError> for RunError {
@@ -446,6 +492,10 @@ impl Evaluator {
             (9, "drive_voltage", NativeFunctionKind::DriveVoltage),
             (10, "time", NativeFunctionKind::Time),
             (11, "delta_time", NativeFunctionKind::DeltaTime),
+            (12, "test", NativeFunctionKind::Test),
+            (13, "assert", NativeFunctionKind::Assert),
+            (14, "assert_close", NativeFunctionKind::AssertClose),
+            (15, "simulate", NativeFunctionKind::Simulate),
         ];
         for (id, name, kind) in builtins {
             scope.set(
@@ -904,6 +954,97 @@ impl Evaluator {
                     .get_mut(&id)
                     .ok_or_else(|| self.error(span, "state handle is no longer valid"))?;
                 state.pending = Some(value);
+                Ok(Value::None)
+            }
+            NativeFunctionKind::Test => {
+                let name = match args.remove("name") {
+                    Some(Value::String(name)) => name,
+                    Some(_) => {
+                        return Err(self.error(span, "test argument `name` must be a string"));
+                    }
+                    None => return Err(missing("name")),
+                };
+                let body = match args.remove("body") {
+                    Some(Value::Lambda(body)) => body,
+                    Some(_) => {
+                        return Err(self.error(span, "test argument `body` must be a lambda"));
+                    }
+                    None => return Err(missing("body")),
+                };
+                self.ensure_no_args(&args, span)?;
+                let mut circuit = function.circuit.inner.borrow_mut();
+                if circuit.tests.iter().any(|test| test.name == name) {
+                    return Err(self.error(span, format!("duplicate test name `{name}`")));
+                }
+                circuit.tests.push(LanguageTest { name, body });
+                Ok(Value::None)
+            }
+            NativeFunctionKind::Assert => {
+                let condition = match args.remove("condition") {
+                    Some(Value::Boolean(condition)) => condition,
+                    Some(_) => {
+                        return Err(
+                            self.error(span, "assert argument `condition` must be a boolean")
+                        );
+                    }
+                    None => return Err(missing("condition")),
+                };
+                let message = match args.remove("message") {
+                    Some(Value::String(message)) => Some(message),
+                    Some(_) => {
+                        return Err(self.error(span, "assert argument `message` must be a string"));
+                    }
+                    None => None,
+                };
+                self.ensure_no_args(&args, span)?;
+                if condition {
+                    Ok(Value::None)
+                } else {
+                    Err(self.error(span, message.unwrap_or_else(|| "assertion failed".into())))
+                }
+            }
+            NativeFunctionKind::AssertClose => {
+                let actual = number(args.remove("actual"), "actual")?;
+                let expected = number(args.remove("expected"), "expected")?;
+                let tolerance = number(args.remove("tolerance"), "tolerance")?;
+                self.ensure_no_args(&args, span)?;
+                if !tolerance.is_finite() || tolerance < 0.0 {
+                    return Err(self.error(
+                        span,
+                        "assert_close argument `tolerance` must be non-negative and finite",
+                    ));
+                }
+                if actual.is_finite()
+                    && expected.is_finite()
+                    && (actual - expected).abs() <= tolerance
+                {
+                    Ok(Value::None)
+                } else {
+                    Err(self.error(
+                        span,
+                        format!(
+                            "assertion failed: expected {expected}, got {actual} (tolerance {tolerance})"
+                        ),
+                    ))
+                }
+            }
+            NativeFunctionKind::Simulate => {
+                let steps = number(args.remove("steps"), "steps")?;
+                let delta_time = number(args.remove("delta_time"), "delta_time")?;
+                self.ensure_no_args(&args, span)?;
+                if !steps.is_finite() || steps < 0.0 || steps.fract() != 0.0 {
+                    return Err(self.error(
+                        span,
+                        "simulate argument `steps` must be a non-negative integer",
+                    ));
+                }
+                if !delta_time.is_finite() || delta_time <= 0.0 {
+                    return Err(self.error(
+                        span,
+                        "simulate argument `delta_time` must be positive and finite",
+                    ));
+                }
+                function.circuit.simulate(steps as usize, delta_time)?;
                 Ok(Value::None)
             }
         }

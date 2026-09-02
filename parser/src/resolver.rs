@@ -57,6 +57,10 @@ impl SymbolResolver {
             "drive_voltage",
             "time",
             "delta_time",
+            "test",
+            "assert",
+            "assert_close",
+            "simulate",
         ];
         let builtins = builtin_names
             .into_iter()
