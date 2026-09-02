@@ -172,9 +172,12 @@ impl AstTransform for TypeResolver {
         &mut self,
         AstNode { inner, meta }: AstNode<Return<Self::From>, Self::From>,
     ) -> Results<AstNode<Return<Self::To>, Self::To>, Self::Error> {
-        self.transform_expression(inner.value).map(|value| AstNode {
-            inner: Return { value },
-            meta: Self::meta(&meta, ValueType::Never),
+        self.transform_expression(inner.value).map(|value| {
+            let ty = value.meta.ty.clone();
+            AstNode {
+                inner: Return { value },
+                meta: Self::meta(&meta, ty),
+            }
         })
     }
     fn transform_match(

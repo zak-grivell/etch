@@ -7,6 +7,9 @@ pub(crate) mod cleaner;
 pub(crate) mod resolver;
 pub(crate) mod semantic;
 
+pub use resolver::Symbol;
+pub use semantic::{PartialMetadata, TypedProgram, ValueType};
+
 #[cfg(test)]
 mod test;
 
@@ -19,7 +22,7 @@ use chumsky::span::{SimpleSpan, Span};
 
 use crate::lexer::Token;
 use crate::resolver::{ResolverError, SymbolResolver};
-use crate::semantic::{SemanticError, TypeResolver, TypedProgram};
+use crate::semantic::{SemanticError, TypeResolver};
 
 pub enum CompileErrors<'src> {
     LexerError(Rich<'src, char, SimpleSpan>),
