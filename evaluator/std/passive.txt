@@ -1,0 +1,55 @@
+export let Resistor = (resistance: Number) -> {
+    let a = use_node();
+    let b = use_node();
+    use_equation(equation: () -> conductance(
+        between: [a, b],
+        value: 1 / resistance,
+    ));
+    return { a, b };
+};
+
+export let Capacitor = (capacitance: Number) -> {
+    let a = use_node();
+    let b = use_node();
+    let previous_voltage = use_state(initial: 0);
+    use_equation(equation: () -> {
+        let across = voltage(node: a) - voltage(node: b);
+        current(
+            between: [a, b],
+            value: capacitance
+                * (across - previous_voltage.get())
+                / delta_time(),
+        );
+        previous_voltage.set(value: across)
+    });
+    return { a, b };
+};
+
+export let Inductor = (inductance: Number) -> {
+    let a = use_node();
+    let b = use_node();
+    let stored_current = use_state(initial: 0);
+    use_equation(equation: () -> {
+        current(between: [a, b], value: stored_current.get());
+        stored_current.set(
+            value: stored_current.get()
+                + (voltage(node: a) - voltage(node: b))
+                * delta_time()
+                / inductance,
+        )
+    });
+    return { a, b };
+};
+
+export let Switch = (closed: Bool, on_resistance: Number, off_resistance: Number) -> {
+    let a = use_node();
+    let b = use_node();
+    use_equation(equation: () -> {
+        let resistance = match closed {
+            true -> on_resistance,
+            false -> off_resistance,
+        };
+        conductance(between: [a, b], value: 1 / resistance)
+    });
+    return { a, b };
+};

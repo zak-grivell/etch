@@ -1,0 +1,106 @@
+export let NotGate = (threshold: Number, low: Number, high: Number) -> {
+    let input = use_node();
+    let output = use_node();
+    use_equation(equation: () -> {
+        let level = match voltage(node: input) > threshold {
+            true -> low,
+            false -> high,
+        };
+        drive_voltage(node: output, value: level, conductance: 1000)
+    });
+    return { input, output };
+};
+
+export let AndGate = (threshold: Number, low: Number, high: Number) -> {
+    let a = use_node();
+    let b = use_node();
+    let output = use_node();
+    use_equation(equation: () -> {
+        let level = match voltage(node: a) > threshold {
+            true -> match voltage(node: b) > threshold {
+                true -> high,
+                false -> low,
+            },
+            false -> low,
+        };
+        drive_voltage(node: output, value: level, conductance: 1000)
+    });
+    return { a, b, output };
+};
+
+export let OrGate = (threshold: Number, low: Number, high: Number) -> {
+    let a = use_node();
+    let b = use_node();
+    let output = use_node();
+    use_equation(equation: () -> {
+        let level = match voltage(node: a) > threshold {
+            true -> high,
+            false -> match voltage(node: b) > threshold {
+                true -> high,
+                false -> low,
+            },
+        };
+        drive_voltage(node: output, value: level, conductance: 1000)
+    });
+    return { a, b, output };
+};
+
+export let NandGate = (threshold: Number, low: Number, high: Number) -> {
+    let a = use_node();
+    let b = use_node();
+    let output = use_node();
+    use_equation(equation: () -> {
+        let level = match voltage(node: a) > threshold {
+            true -> match voltage(node: b) > threshold {
+                true -> low,
+                false -> high,
+            },
+            false -> high,
+        };
+        drive_voltage(node: output, value: level, conductance: 1000)
+    });
+    return { a, b, output };
+};
+
+export let NorGate = (threshold: Number, low: Number, high: Number) -> {
+    let a = use_node();
+    let b = use_node();
+    let output = use_node();
+    use_equation(equation: () -> {
+        let level = match voltage(node: a) > threshold {
+            true -> low,
+            false -> match voltage(node: b) > threshold {
+                true -> low,
+                false -> high,
+            },
+        };
+        drive_voltage(node: output, value: level, conductance: 1000)
+    });
+    return { a, b, output };
+};
+
+export let DFlipFlop = (threshold: Number, low: Number, high: Number) -> {
+    let d = use_node();
+    let clock = use_node();
+    let q = use_node();
+    let previous_clock = use_state(initial: false);
+    let stored = use_state(initial: false);
+    use_equation(equation: () -> {
+        let clock_high = voltage(node: clock) > threshold;
+        let rising = match previous_clock.get() {
+            false -> clock_high,
+            true -> false,
+        };
+        match rising {
+            true -> stored.set(value: voltage(node: d) > threshold),
+            false -> stored.set(value: stored.get()),
+        };
+        previous_clock.set(value: clock_high);
+        let level = match stored.get() {
+            true -> high,
+            false -> low,
+        };
+        drive_voltage(node: q, value: level, conductance: 1000)
+    });
+    return { d, clock, q };
+};

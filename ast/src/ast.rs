@@ -349,6 +349,7 @@ impl<A: AstTraverse> Transform<Program<<A as AstTransform>::From>, Program<<A as
     for A
 where
     A: Transform<Import<<A as AstTransform>::From>, Import<<A as AstTransform>::To>>
+        + Transform<Definition<<A as AstTransform>::From>, Definition<<A as AstTransform>::To>>
         + Transform<Statement<<A as AstTransform>::From>, Statement<<A as AstTransform>::To>>,
 {
     fn transform(
@@ -357,6 +358,7 @@ where
     ) -> Results<AstNode<Program<Self::To>, Self::To>, A::Error> {
         match inner {
             Program::Import(x) => self.dispatch(meta, x, Program::Import),
+            Program::Export(x) => self.dispatch(meta, x, Program::Export),
             Program::Statement(x) => self.dispatch(meta, x, Program::Statement),
         }
     }

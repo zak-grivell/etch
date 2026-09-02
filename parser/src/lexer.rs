@@ -34,6 +34,9 @@ pub enum Keyword {
     #[strum(serialize = "import")]
     Import,
 
+    #[strum(serialize = "export")]
+    Export,
+
     #[strum(serialize = "if")]
     If,
 }
@@ -216,6 +219,7 @@ pub fn lexer<'src>()
             "type" => Token::Keyword(Keyword::Type),
             "from" => Token::Keyword(Keyword::From),
             "import" => Token::Keyword(Keyword::Import),
+            "export" => Token::Keyword(Keyword::Export),
             "if" => Token::Keyword(Keyword::If),
             _ => Token::Identifier(ident),
         })

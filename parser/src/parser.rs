@@ -93,11 +93,21 @@ where
         .spanned_node()
         .boxed();
 
+    let export = keyword!(Export)
+        .ignore_then(keyword!(Let))
+        .ignore_then(pattern_parse())
+        .then_ignore(symbol!(Equals))
+        .then(expression_parse())
+        .map(|(lhs, rhs)| ast::Definition { lhs, rhs })
+        .map(Program::Export)
+        .spanned_node()
+        .boxed();
+
     let statement = statement_parse(expression_parse().boxed())
         .map(|statement: Parsed<Statement<ParsedNode>>| statement.map(Program::Statement))
         .boxed();
 
-    choice((import, statement))
+    choice((import, export, statement))
         .separated_by(symbol!(Semicolon))
         .allow_trailing()
         .collect::<Vec<_>>()

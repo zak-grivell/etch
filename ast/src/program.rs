@@ -1,6 +1,6 @@
 use derive_more::From;
 
-use crate::{Ast, Statement};
+use crate::{Ast, Definition, Statement};
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Import<A: Ast> {
@@ -11,5 +11,6 @@ pub struct Import<A: Ast> {
 #[derive(Debug, PartialEq, Clone, From)]
 pub enum Program<A: Ast> {
     Import(Import<A>),
+    Export(Definition<A>),
     Statement(Statement<A>),
 }

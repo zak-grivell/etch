@@ -92,11 +92,62 @@ fn loads_imports_from_the_source_provider() {
             ),
             (
                 "math.etch".into(),
-                "let double = (x: Number) -> x * 2".into(),
+                "export let double = (x: Number) -> x * 2".into(),
             ),
         ]),
     };
     assert_eq!(evaluate(&sources).unwrap().values, vec![Value::Number(8.0)]);
+}
+
+#[test]
+fn imports_only_explicitly_exported_values() {
+    let sources = Sources {
+        main: "app.etch".into(),
+        files: BTreeMap::from([
+            (
+                "app.etch".into(),
+                "from \"module.etch\" import { public }; public".into(),
+            ),
+            (
+                "module.etch".into(),
+                "let private = 1; export let public = private + 1".into(),
+            ),
+        ]),
+    };
+    assert_eq!(evaluate(&sources).unwrap().values, vec![Value::Number(2.0)]);
+}
+
+#[test]
+fn loads_bundled_standard_library_components() {
+    let source = r#"
+        from "std/sources.txt" import { VoltageSource, Ground };
+        from "std/passive.txt" import { Resistor };
+        from "std/analog.txt" import { OpAmp, Led };
+        from "std/digital.txt" import { NotGate, DFlipFlop };
+
+        let supply = VoltageSource(value: 5);
+        let ground = Ground();
+        let upper = Resistor(resistance: 1000);
+        let lower = Resistor(resistance: 1000);
+        supply.positive <- upper.a;
+        upper.b <- lower.a;
+        lower.b <- ground.node;
+
+        test(name: "standard divider", body: () -> {
+            simulate(steps: 1, delta_time: 0.001);
+            assert_close(
+                actual: voltage(node: upper.b),
+                expected: 2.5,
+                tolerance: 0.000001,
+            )
+        });
+
+        { op_amp: OpAmp, led: Led, inverter: NotGate, flip_flop: DFlipFlop }
+    "#;
+    let output = evaluate(&Sources::single(source)).unwrap();
+    let tests = output.run_tests();
+    assert_eq!(tests.len(), 1);
+    assert!(tests[0].result.is_ok());
 }
 
 #[test]

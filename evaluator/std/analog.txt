@@ -1,0 +1,47 @@
+export let OpAmp = (gain: Number, low: Number, high: Number, output_conductance: Number) -> {
+    let positive = use_node();
+    let negative = use_node();
+    let output = use_node();
+    use_equation(equation: () -> {
+        let raw = gain * (voltage(node: positive) - voltage(node: negative));
+        let limited = match raw {
+            let value if value > high -> high,
+            let value if value < low -> low,
+            let value -> value,
+        };
+        drive_voltage(
+            node: output,
+            value: limited,
+            conductance: output_conductance,
+        )
+    });
+    return { positive, negative, output };
+};
+
+export let Comparator = (threshold: Number, low: Number, high: Number) -> {
+    let input = use_node();
+    let output = use_node();
+    use_equation(equation: () -> {
+        let level = match voltage(node: input) > threshold {
+            true -> high,
+            false -> low,
+        };
+        drive_voltage(node: output, value: level, conductance: 1000)
+    });
+    return { input, output };
+};
+
+export let Diode = (forward_voltage: Number, on_resistance: Number, off_resistance: Number) -> {
+    let anode = use_node();
+    let cathode = use_node();
+    use_equation(equation: () -> {
+        let resistance = match voltage(node: anode) - voltage(node: cathode) > forward_voltage {
+            true -> on_resistance,
+            false -> off_resistance,
+        };
+        conductance(between: [anode, cathode], value: 1 / resistance)
+    });
+    return { anode, cathode };
+};
+
+export let Led = Diode;

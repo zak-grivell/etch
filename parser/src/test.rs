@@ -19,6 +19,16 @@ fn parses_the_example_program() {
 }
 
 #[test]
+fn parses_exported_top_level_bindings() {
+    let source = "export let component = (value: Number) -> value";
+    let programs = compile(source).unwrap_or_else(|errors| {
+        crate::print_errors("test.etch", source, errors);
+        panic!("export should compile")
+    });
+    assert!(matches!(programs[0].inner, ast::Program::Export(_)));
+}
+
+#[test]
 fn keeps_keywords_inside_identifiers() {
     assert!(compile("let returnValue = 1").is_ok());
 }

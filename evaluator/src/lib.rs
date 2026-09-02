@@ -416,8 +416,8 @@ fn load_file(
         cycle.push(name.to_owned());
         return Err(RunError::ImportCycle(cycle));
     }
-    let source = sources
-        .get_file(name)
+    let source = standard_library_source(name)
+        .or_else(|| sources.get_file(name))
         .ok_or_else(|| RunError::FileNotFound(name.to_owned()))?;
     let programs = parser::compile(source).map_err(|errors| RunError::Compilation {
         file: name.to_owned(),
@@ -428,6 +428,16 @@ fn load_file(
     let result = Evaluator::new(circuit).evaluate_file(&programs, sources, loading);
     loading.pop();
     result
+}
+
+fn standard_library_source(name: &str) -> Option<&'static str> {
+    match name {
+        "std/sources.txt" => Some(include_str!("../std/sources.txt")),
+        "std/passive.txt" => Some(include_str!("../std/passive.txt")),
+        "std/analog.txt" => Some(include_str!("../std/analog.txt")),
+        "std/digital.txt" => Some(include_str!("../std/digital.txt")),
+        _ => None,
+    }
 }
 
 pub struct Evaluator {
@@ -525,6 +535,16 @@ impl Evaluator {
                         format!("runtime imports are not implemented for `{}`", import.path),
                     ));
                 }
+                Program::Export(definition) => {
+                    match self.statement(
+                        &Statement::Definition(definition.clone()),
+                        program.meta.span,
+                    )? {
+                        Flow::Continue(Value::None) => {}
+                        Flow::Continue(value) => output.push(value),
+                        Flow::Return(_) => unreachable!("a definition cannot return"),
+                    }
+                }
                 Program::Statement(statement) => {
                     match self.statement(statement, program.meta.span)? {
                         Flow::Continue(Value::None) => {}
@@ -549,12 +569,24 @@ impl Evaluator {
         loading: &mut Vec<String>,
     ) -> Result<(EvaluationOutput, BTreeMap<String, Value>), RunError> {
         let mut output = Vec::new();
+        let mut exports = BTreeMap::new();
         for program in programs {
             match &program.inner {
                 Program::Import(import) => {
                     let (_, exports) =
                         load_file(sources, &import.path, loading, self.circuit.clone())?;
                     self.bind(&import.imports, &Value::Object(exports))?;
+                }
+                Program::Export(definition) => {
+                    match self.statement(
+                        &Statement::Definition(definition.clone()),
+                        program.meta.span,
+                    )? {
+                        Flow::Continue(Value::None) => {}
+                        Flow::Continue(value) => output.push(value),
+                        Flow::Return(_) => unreachable!("a definition cannot return"),
+                    }
+                    self.collect_exports(&definition.lhs, &mut exports);
                 }
                 Program::Statement(statement) => {
                     match self.statement(statement, program.meta.span)? {
@@ -569,13 +601,6 @@ impl Evaluator {
                 }
             }
         }
-        let exports = self
-            .scope
-            .values
-            .borrow()
-            .iter()
-            .map(|(symbol, value)| (symbol.name.clone(), value.clone()))
-            .collect();
         Ok((
             EvaluationOutput {
                 values: output,
@@ -583,6 +608,33 @@ impl Evaluator {
             },
             exports,
         ))
+    }
+
+    fn collect_exports(
+        &self,
+        pattern: &AstNode<Pattern<PartialMetadata>, PartialMetadata>,
+        exports: &mut BTreeMap<String, Value>,
+    ) {
+        match &pattern.inner {
+            Pattern::Binding(ident) => {
+                if let Some(symbol) = &ident.ident
+                    && let Some(value) = self.scope.get(symbol)
+                {
+                    exports.insert(symbol.name.clone(), value);
+                }
+            }
+            Pattern::Object(object) => {
+                for pattern in object.fields.values() {
+                    self.collect_exports(pattern, exports);
+                }
+            }
+            Pattern::Array(array) => {
+                for pattern in &array.values {
+                    self.collect_exports(pattern, exports);
+                }
+            }
+            Pattern::Enum(_) | Pattern::Primative(_) => {}
+        }
     }
 
     fn error(&self, span: Span, message: impl Into<String>) -> EvaluationError {
