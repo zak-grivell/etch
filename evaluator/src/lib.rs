@@ -1,265 +1,1032 @@
-// use ast::{Expression, Statement};
-// use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+use std::rc::Rc;
 
-// #[cfg(test)]
-// mod test;
+use ast::{
+    AstNode, BinaryOperator, Expression, Pattern, Primative, Program, Span, Statement,
+    UnaryOperator,
+};
+use parser::{PartialMetadata, Symbol, TypedProgram};
 
-// #[derive(Debug)]
-// pub struct Node {
-//     connections: Vec<Connection>,
-// }
+#[cfg(test)]
+mod test;
 
-// #[derive(Debug)]
-// pub struct Connection {
-//     a: Rc<RefCell<Node>>,
-//     b: Rc<RefCell<Node>>,
+#[derive(Clone, Default)]
+pub struct Circuit {
+    inner: Rc<RefCell<CircuitState>>,
+}
 
-//     name: String,
-// }
+#[derive(Default)]
+struct CircuitState {
+    next_node_id: u64,
+    next_state_id: u64,
+    voltages: BTreeMap<u64, f64>,
+    connections: BTreeMap<u64, BTreeSet<u64>>,
+    hooks: Vec<LambdaValue>,
+    conductances: Vec<(u64, u64, f64)>,
+    currents: Vec<(u64, u64, f64)>,
+    voltage_drives: Vec<(u64, f64, f64)>,
+    fixed: BTreeMap<u64, f64>,
+    time: f64,
+    delta_time: f64,
+    states: BTreeMap<u64, StateSlot>,
+}
 
-// #[derive(Debug)]
-// pub enum Value<'src> {
-//     Object(HashMap<&'src str, Rc<Value<'src>>>),
-//     String(&'src str),
-//     Lambda {
-//         params: HashMap<&'src str, Option<&'src str>>,
-//         body: Vec<Statement<'src>>,
-//         scope: Scope<'src>,
-//     },
-//     Array(Vec<Rc<Value<'src>>>),
-//     Some(Rc<Value<'src>>),
-//     Number {
-//         value: f64,
-//         unit: Option<&'src str>,
-//     },
-//     Boolean(bool),
-//     Node(Rc<RefCell<Node>>),
-//     None,
-// }
+#[derive(Clone, Debug)]
+struct StateSlot {
+    current: Value,
+    pending: Option<Value>,
+}
 
-// pub fn evauluate_expression<'src>(expr: Expression<'src>, scope: &Scope<'src>) -> Rc<Value<'src>> {
-//     let e: Rc<Value> = match expr {
-//         Expression::Number { value, unit } => Value::Number { value, unit }.into(),
-//         Expression::String(str) => Value::String(str).into(),
-//         Expression::Object(mp) => Value::Object(
-//             mp.into_iter()
-//                 .map(|(k, v)| (k, evauluate_expression(v, scope)))
-//                 .collect(),
-//         )
-//         .into(),
-//         Expression::Array(arr) => Value::Array(
-//             arr.into_iter()
-//                 .map(|expr| evauluate_expression(expr, scope))
-//                 .collect(),
-//         )
-//         .into(),
-//         Expression::Lambda { params, body } => {
-//             let sc = scope.varibles.borrow().clone();
+impl fmt::Debug for Circuit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let inner = self.inner.borrow();
+        f.debug_struct("Circuit")
+            .field("nodes", &inner.voltages.len())
+            .field("hooks", &inner.hooks.len())
+            .field("time", &inner.time)
+            .finish()
+    }
+}
 
-//             Value::Lambda {
-//                 params,
-//                 body,
-//                 scope: Scope {
-//                     varibles: Rc::new(RefCell::new(sc)),
-//                 },
-//             }
-//         }
-//         .into(),
-//         Expression::Boolean(b) => Value::Boolean(b).into(),
+impl Circuit {
+    fn node(&self) -> NodeValue {
+        let mut inner = self.inner.borrow_mut();
+        inner.next_node_id += 1;
+        let id = inner.next_node_id;
+        inner.voltages.insert(id, 0.0);
+        inner.connections.insert(id, BTreeSet::new());
+        NodeValue {
+            id,
+            circuit: self.clone(),
+        }
+    }
 
-//         Expression::None => Value::None.into(),
-//         Expression::Some(v) => Value::Some(evauluate_expression(*v, scope)).into(),
+    fn connect(&self, a: u64, b: u64) {
+        let mut inner = self.inner.borrow_mut();
+        inner.connections.entry(a).or_default().insert(b);
+        inner.connections.entry(b).or_default().insert(a);
+    }
 
-//         Expression::Match { value, conds } => todo!(),
+    pub fn node_count(&self) -> usize {
+        self.inner.borrow().voltages.len()
+    }
 
-//         Expression::Block { body } => evaluate_statements(&body, scope),
+    pub fn hook_count(&self) -> usize {
+        self.inner.borrow().hooks.len()
+    }
 
-//         Expression::Ident(name) => scope
-//             .varibles
-//             .borrow()
-//             .get(name)
-//             .unwrap_or_else(|| panic!("{} does not exist in scope", name))
-//             .clone(),
+    pub fn voltage(&self, node: &NodeValue) -> f64 {
+        self.inner
+            .borrow()
+            .voltages
+            .get(&node.id)
+            .copied()
+            .unwrap_or(0.0)
+    }
 
-//         Expression::Call { expression, args } => {
-//             let lambda = evauluate_expression(*expression, scope);
-//             let Value::Lambda {
-//                 params,
-//                 body,
-//                 scope: lambda_scope,
-//             } = lambda.as_ref()
-//             else {
-//                 panic!("bad eval");
-//             };
+    pub fn time(&self) -> f64 {
+        self.inner.borrow().time
+    }
 
-//             evaluate_statements(body, lambda_scope)
-//         }
+    pub fn simulate(&self, steps: usize, delta_time: f64) -> Result<(), EvaluationError> {
+        for _ in 0..steps {
+            {
+                let mut inner = self.inner.borrow_mut();
+                inner.delta_time = delta_time;
+            }
+            for _ in 0..16 {
+                let hooks = {
+                    let mut inner = self.inner.borrow_mut();
+                    inner.conductances.clear();
+                    inner.currents.clear();
+                    inner.voltage_drives.clear();
+                    inner.fixed.clear();
+                    inner.hooks.clone()
+                };
+                for hook in hooks {
+                    Evaluator::new(self.clone()).call(hook, BTreeMap::new(), Span::default())?;
+                }
+                self.solve_iteration();
+            }
+            self.inner.borrow_mut().time += delta_time;
+            let mut inner = self.inner.borrow_mut();
+            for state in inner.states.values_mut() {
+                if let Some(value) = state.pending.take() {
+                    state.current = value;
+                }
+            }
+        }
+        Ok(())
+    }
 
-//         Expression::ObjectAcess { expr, field } => {
-//             let val = evauluate_expression(*expr, scope);
-//             let Value::Object(obj) = val.as_ref() else {
-//                 panic!("Not an object while trying to access object");
-//             };
-//             obj.get(field).unwrap_or(&Rc::new(Value::None)).clone()
-//         }
+    fn solve_iteration(&self) {
+        let mut inner = self.inner.borrow_mut();
+        let ids = inner.voltages.keys().copied().collect::<Vec<_>>();
+        let mut visited = BTreeSet::new();
+        let mut components = Vec::new();
+        for root in ids {
+            if !visited.insert(root) {
+                continue;
+            }
+            let mut stack = vec![root];
+            let mut component = Vec::new();
+            while let Some(node) = stack.pop() {
+                component.push(node);
+                for next in inner.connections.get(&node).into_iter().flatten() {
+                    if visited.insert(*next) {
+                        stack.push(*next);
+                    }
+                }
+            }
+            components.push(component);
+        }
 
-//         Expression::Negate(expr) => {
-//             let val = evauluate_expression(*expr, scope);
-//             let Value::Number { value, unit } = val.as_ref() else {
-//                 panic!("NAN when trying to negate");
-//             };
-//             Value::Number {
-//                 value: -value,
-//                 unit: *unit,
-//             }
-//             .into()
-//         }
+        let old = inner.voltages.clone();
+        for component in components {
+            if let Some(voltage) = component.iter().find_map(|id| inner.fixed.get(id).copied()) {
+                for id in component {
+                    inner.voltages.insert(id, voltage);
+                }
+                continue;
+            }
+            let members = component.iter().copied().collect::<BTreeSet<_>>();
+            let mut numerator = 0.0;
+            let mut denominator = 0.0;
+            for (a, b, conductance) in &inner.conductances {
+                if members.contains(a) && !members.contains(b) {
+                    numerator += old.get(b).copied().unwrap_or(0.0) * conductance;
+                    denominator += conductance;
+                } else if members.contains(b) && !members.contains(a) {
+                    numerator += old.get(a).copied().unwrap_or(0.0) * conductance;
+                    denominator += conductance;
+                }
+            }
+            for (from, to, current) in &inner.currents {
+                if members.contains(from) {
+                    numerator -= current;
+                }
+                if members.contains(to) {
+                    numerator += current;
+                }
+            }
+            for (node, target, conductance) in &inner.voltage_drives {
+                if members.contains(node) {
+                    numerator += target * conductance;
+                    denominator += conductance;
+                }
+            }
+            if denominator > 0.0 {
+                let voltage = numerator / denominator;
+                for id in component {
+                    inner.voltages.insert(id, voltage);
+                }
+            }
+        }
+    }
+}
 
-//         Expression::Flip(expr) => {
-//             let val = evauluate_expression(*expr, scope);
-//             let Value::Boolean(b) = val.as_ref() else {
-//                 panic!("NAN when trying to flip");
-//             };
-//             Value::Boolean(!b).into()
-//         }
+#[derive(Clone, Debug)]
+pub struct NodeValue {
+    id: u64,
+    circuit: Circuit,
+}
 
-//         Expression::Add(expr1, expr2) => {
-//             let va = evauluate_expression(*expr1, scope);
-//             let vb = evauluate_expression(*expr2, scope);
-//             let Value::Number { value: a, unit } = va.as_ref() else {
-//                 panic!("NAN add a")
-//             };
-//             let Value::Number { value: b, .. } = vb.as_ref() else {
-//                 panic!("NAN add b")
-//             };
-//             Value::Number {
-//                 value: a + b,
-//                 unit: *unit,
-//             }
-//             .into()
-//         }
-//         Expression::Sub(expr1, expr2) => {
-//             let va = evauluate_expression(*expr1, scope);
-//             let vb = evauluate_expression(*expr2, scope);
-//             let Value::Number { value: a, unit } = va.as_ref() else {
-//                 panic!("NAN sub a")
-//             };
-//             let Value::Number { value: b, .. } = vb.as_ref() else {
-//                 panic!("NAN sub b")
-//             };
-//             Value::Number {
-//                 value: a - b,
-//                 unit: *unit,
-//             }
-//             .into()
-//         }
-//         Expression::Mul(expr1, expr2) => {
-//             let va = evauluate_expression(*expr1, scope);
-//             let vb = evauluate_expression(*expr2, scope);
-//             let Value::Number { value: a, unit } = va.as_ref() else {
-//                 panic!("NAN mul a")
-//             };
-//             let Value::Number { value: b, .. } = vb.as_ref() else {
-//                 panic!("NAN mul b")
-//             };
-//             Value::Number {
-//                 value: a * b,
-//                 unit: *unit,
-//             }
-//             .into()
-//         }
-//         Expression::Div(expr1, expr2) => {
-//             let va = evauluate_expression(*expr1, scope);
-//             let vb = evauluate_expression(*expr2, scope);
-//             let Value::Number { value: a, unit } = va.as_ref() else {
-//                 panic!("NAN div a")
-//             };
-//             let Value::Number { value: b, .. } = vb.as_ref() else {
-//                 panic!("NAN div b")
-//             };
-//             Value::Number {
-//                 value: a / b,
-//                 unit: *unit,
-//             }
-//             .into()
-//         }
+impl NodeValue {
+    pub fn id(&self) -> u64 {
+        self.id
+    }
 
-//         Expression::Union(expr1, expr2) => {
-//             let ra = evauluate_expression(*expr1, scope);
-//             let rb = evauluate_expression(*expr2, scope);
-//             let Value::Object(a) = ra.as_ref() else {
-//                 panic!("not object union a")
-//             };
-//             let Value::Object(b) = rb.as_ref() else {
-//                 panic!("not object union b")
-//             };
-//             let mut out = HashMap::new();
-//             for (k, v) in a.iter() {
-//                 out.insert(*k, v.clone());
-//             }
-//             for (k, v) in b.iter() {
-//                 out.insert(*k, v.clone());
-//             }
-//             Value::Object(out).into()
-//         }
-//         Expression::Wire(expr1, expr2) => {
-//             let ra = evauluate_expression(*expr1, scope);
-//             let rb = evauluate_expression(*expr2, scope);
-//             let Value::Object(a) = ra.as_ref() else {
-//                 panic!("not object wire a")
-//             };
-//             let Value::Object(b) = rb.as_ref() else {
-//                 panic!("not object wire b")
-//             };
-//             let mut out = HashMap::new();
-//             for (k, v) in a.iter() {
-//                 out.insert(*k, v.clone());
-//             }
-//             for (k, v) in b.iter() {
-//                 if !out.contains_key(k) {
-//                     panic!("Cannot wire in")
-//                 }
-//                 out.insert(*k, v.clone());
-//             }
-//             Value::Object(out).into()
-//         }
-//     };
+    pub fn connections(&self) -> BTreeSet<u64> {
+        self.circuit
+            .inner
+            .borrow()
+            .connections
+            .get(&self.id)
+            .cloned()
+            .unwrap_or_default()
+    }
 
-//     e
-// }
+    fn connect(&self, other: &Self) {
+        self.circuit.connect(self.id, other.id);
+    }
+}
 
-// pub fn evaluate_statements<'src>(
-//     statements: &Vec<Statement<'src>>,
-//     scope: &Scope<'src>,
-// ) -> Rc<Value<'src>> {
-//     for statement in statements {
-//         match statement {
-//             Statement::Definition { name, rhs } => {
-//                 let result = evauluate_expression(*rhs.clone(), scope);
-//                 scope.varibles.borrow_mut().insert(name, result);
-//             }
-//             Statement::Expression(expr) => {
-//                 println!("Not evaluated");
-//             }
-//             Statement::Return { value } => return evauluate_expression(*value.clone(), scope),
+impl PartialEq for NodeValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
 
-//             Statement::TypeDefinition { name, rhs } => todo!(),
-//         };
-//     }
+#[derive(Clone)]
+pub struct LambdaValue {
+    params: BTreeMap<Option<Symbol>, ast::Type<PartialMetadata>>,
+    body: Box<AstNode<Expression<PartialMetadata>, PartialMetadata>>,
+    scope: Scope,
+}
 
-//     Value::None.into()
-// }
+impl fmt::Debug for LambdaValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LambdaValue")
+            .field("params", &self.params.keys().collect::<Vec<_>>())
+            .finish_non_exhaustive()
+    }
+}
 
-// #[derive(Clone, Default, Debug)]
-// pub struct Scope<'src> {
-//     varibles: Rc<RefCell<HashMap<&'src str, Rc<Value<'src>>>>>,
-//     // types: Rc<RefCell<HashMap<&'src str, Rc<Value<'src>>>>>,
-// }
+#[derive(Clone, Debug)]
+pub enum Value {
+    Number(f64),
+    String(String),
+    Boolean(bool),
+    Array(Vec<Value>),
+    Object(BTreeMap<String, Value>),
+    Lambda(LambdaValue),
+    Node(NodeValue),
+    NativeFunction(NativeFunction),
+    None,
+}
 
-// impl<'a> Scope<'a> {
-//     pub fn new() -> Scope<'a> {
-//         Scope {
-//             varibles: Rc::new(RefCell::new(HashMap::new())),
-//         }
-//     }
-// }
+#[derive(Clone, Debug)]
+pub struct NativeFunction {
+    kind: NativeFunctionKind,
+    circuit: Circuit,
+}
+
+#[derive(Clone, Debug)]
+enum NativeFunctionKind {
+    Hook,
+    UseNode,
+    UseState,
+    UseEquation,
+    Voltage,
+    Conductance,
+    Current,
+    FixVoltage,
+    DriveVoltage,
+    Time,
+    DeltaTime,
+    StateGet(u64),
+    StateSet(u64),
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Number(a), Self::Number(b)) => a == b,
+            (Self::String(a), Self::String(b)) => a == b,
+            (Self::Boolean(a), Self::Boolean(b)) => a == b,
+            (Self::Array(a), Self::Array(b)) => a == b,
+            (Self::Object(a), Self::Object(b)) => a == b,
+            (Self::Node(a), Self::Node(b)) => a == b,
+            (Self::None, Self::None) => true,
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EvaluationError {
+    pub span: Span,
+    pub message: String,
+}
+
+pub trait SourceProvider {
+    fn main_file(&self) -> &str;
+    fn get_file(&self, name: &str) -> Option<&str>;
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RunError {
+    FileNotFound(String),
+    ImportCycle(Vec<String>),
+    Compilation { file: String, error_count: usize },
+    Evaluation(EvaluationError),
+}
+
+#[derive(Clone, Debug)]
+pub struct EvaluationOutput {
+    pub values: Vec<Value>,
+    pub circuit: Circuit,
+}
+
+impl From<EvaluationError> for RunError {
+    fn from(error: EvaluationError) -> Self {
+        Self::Evaluation(error)
+    }
+}
+
+type Values = Rc<RefCell<BTreeMap<Symbol, Value>>>;
+
+#[derive(Clone, Default)]
+struct Scope {
+    values: Values,
+}
+
+impl Scope {
+    fn child(&self) -> Self {
+        Self {
+            values: Rc::new(RefCell::new(self.values.borrow().clone())),
+        }
+    }
+
+    fn get(&self, symbol: &Symbol) -> Option<Value> {
+        self.values.borrow().get(symbol).cloned()
+    }
+
+    fn set(&self, symbol: Symbol, value: Value) {
+        self.values.borrow_mut().insert(symbol, value);
+    }
+}
+
+enum Flow {
+    Continue(Value),
+    Return(Value),
+}
+
+pub fn evaluate(sources: &impl SourceProvider) -> Result<EvaluationOutput, RunError> {
+    let mut loading = Vec::new();
+    load_file(
+        sources,
+        sources.main_file(),
+        &mut loading,
+        Circuit::default(),
+    )
+    .map(|(output, _)| output)
+}
+
+pub fn evaluate_typed(programs: &[TypedProgram]) -> Result<EvaluationOutput, EvaluationError> {
+    Evaluator::default().evaluate_typed(programs)
+}
+
+fn load_file(
+    sources: &impl SourceProvider,
+    name: &str,
+    loading: &mut Vec<String>,
+    circuit: Circuit,
+) -> Result<(EvaluationOutput, BTreeMap<String, Value>), RunError> {
+    if let Some(index) = loading.iter().position(|file| file == name) {
+        let mut cycle = loading[index..].to_vec();
+        cycle.push(name.to_owned());
+        return Err(RunError::ImportCycle(cycle));
+    }
+    let source = sources
+        .get_file(name)
+        .ok_or_else(|| RunError::FileNotFound(name.to_owned()))?;
+    let programs = parser::compile(source).map_err(|errors| RunError::Compilation {
+        file: name.to_owned(),
+        error_count: errors.len(),
+    })?;
+
+    loading.push(name.to_owned());
+    let result = Evaluator::new(circuit).evaluate_file(&programs, sources, loading);
+    loading.pop();
+    result
+}
+
+pub struct Evaluator {
+    scope: Scope,
+    circuit: Circuit,
+}
+
+impl Default for Evaluator {
+    fn default() -> Self {
+        Self::new(Circuit::default())
+    }
+}
+
+impl Evaluator {
+    fn new(circuit: Circuit) -> Self {
+        let scope = Scope::default();
+        scope.set(
+            Symbol {
+                id: 0,
+                name: "hook".into(),
+            },
+            Value::NativeFunction(NativeFunction {
+                kind: NativeFunctionKind::Hook,
+                circuit: circuit.clone(),
+            }),
+        );
+        let sim = [
+            ("voltage", NativeFunctionKind::Voltage),
+            ("conductance", NativeFunctionKind::Conductance),
+            ("current", NativeFunctionKind::Current),
+            ("fix_voltage", NativeFunctionKind::FixVoltage),
+            ("drive_voltage", NativeFunctionKind::DriveVoltage),
+            ("time", NativeFunctionKind::Time),
+            ("delta_time", NativeFunctionKind::DeltaTime),
+        ]
+        .into_iter()
+        .map(|(name, kind)| {
+            (
+                name.into(),
+                Value::NativeFunction(NativeFunction {
+                    kind,
+                    circuit: circuit.clone(),
+                }),
+            )
+        })
+        .collect();
+        scope.set(
+            Symbol {
+                id: 1,
+                name: "sim".into(),
+            },
+            Value::Object(sim),
+        );
+        let builtins = [
+            (2, "use_node", NativeFunctionKind::UseNode),
+            (3, "use_state", NativeFunctionKind::UseState),
+            (4, "use_equation", NativeFunctionKind::UseEquation),
+            (5, "voltage", NativeFunctionKind::Voltage),
+            (6, "conductance", NativeFunctionKind::Conductance),
+            (7, "current", NativeFunctionKind::Current),
+            (8, "fix_voltage", NativeFunctionKind::FixVoltage),
+            (9, "drive_voltage", NativeFunctionKind::DriveVoltage),
+            (10, "time", NativeFunctionKind::Time),
+            (11, "delta_time", NativeFunctionKind::DeltaTime),
+        ];
+        for (id, name, kind) in builtins {
+            scope.set(
+                Symbol {
+                    id,
+                    name: name.into(),
+                },
+                Value::NativeFunction(NativeFunction {
+                    kind,
+                    circuit: circuit.clone(),
+                }),
+            );
+        }
+        Self { scope, circuit }
+    }
+
+    pub fn evaluate_typed(
+        &mut self,
+        programs: &[TypedProgram],
+    ) -> Result<EvaluationOutput, EvaluationError> {
+        let mut output = Vec::new();
+        for program in programs {
+            match &program.inner {
+                Program::Import(import) => {
+                    return Err(self.error(
+                        program.meta.span,
+                        format!("runtime imports are not implemented for `{}`", import.path),
+                    ));
+                }
+                Program::Statement(statement) => {
+                    match self.statement(statement, program.meta.span)? {
+                        Flow::Continue(Value::None) => {}
+                        Flow::Continue(value) => output.push(value),
+                        Flow::Return(_) => {
+                            return Err(self.error(program.meta.span, "return outside a lambda"));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(EvaluationOutput {
+            values: output,
+            circuit: self.circuit.clone(),
+        })
+    }
+
+    fn evaluate_file(
+        &mut self,
+        programs: &[TypedProgram],
+        sources: &impl SourceProvider,
+        loading: &mut Vec<String>,
+    ) -> Result<(EvaluationOutput, BTreeMap<String, Value>), RunError> {
+        let mut output = Vec::new();
+        for program in programs {
+            match &program.inner {
+                Program::Import(import) => {
+                    let (_, exports) =
+                        load_file(sources, &import.path, loading, self.circuit.clone())?;
+                    self.bind(&import.imports, &Value::Object(exports))?;
+                }
+                Program::Statement(statement) => {
+                    match self.statement(statement, program.meta.span)? {
+                        Flow::Continue(Value::None) => {}
+                        Flow::Continue(value) => output.push(value),
+                        Flow::Return(_) => {
+                            return Err(self
+                                .error(program.meta.span, "return outside a lambda")
+                                .into());
+                        }
+                    }
+                }
+            }
+        }
+        let exports = self
+            .scope
+            .values
+            .borrow()
+            .iter()
+            .map(|(symbol, value)| (symbol.name.clone(), value.clone()))
+            .collect();
+        Ok((
+            EvaluationOutput {
+                values: output,
+                circuit: self.circuit.clone(),
+            },
+            exports,
+        ))
+    }
+
+    fn error(&self, span: Span, message: impl Into<String>) -> EvaluationError {
+        EvaluationError {
+            span,
+            message: message.into(),
+        }
+    }
+
+    fn statement(
+        &mut self,
+        statement: &Statement<PartialMetadata>,
+        _span: Span,
+    ) -> Result<Flow, EvaluationError> {
+        match statement {
+            Statement::Definition(definition) => {
+                let value = self.expression_node(&definition.rhs)?;
+                self.bind(&definition.lhs, &value)?;
+                Ok(Flow::Continue(Value::None))
+            }
+            Statement::TypeDefinition(_) => Ok(Flow::Continue(Value::None)),
+            Statement::Return(rtn) => Ok(Flow::Return(self.expression_node(&rtn.value)?)),
+            Statement::Expression(expression) => self.expression(expression).map(Flow::Continue),
+        }
+    }
+
+    fn expression_node(
+        &mut self,
+        node: &AstNode<Expression<PartialMetadata>, PartialMetadata>,
+    ) -> Result<Value, EvaluationError> {
+        self.expression(&node.inner)
+    }
+
+    fn expression(
+        &mut self,
+        expression: &Expression<PartialMetadata>,
+    ) -> Result<Value, EvaluationError> {
+        match expression {
+            Expression::Primative(value) => Ok(match value {
+                Primative::Boolean(value) => Value::Boolean(*value),
+                Primative::Number(value) => Value::Number(*value),
+                Primative::String(value) => Value::String(value.clone()),
+            }),
+            Expression::Ident(ident) => ident
+                .ident
+                .as_ref()
+                .and_then(|symbol| self.scope.get(symbol))
+                .ok_or_else(|| self.error(Span::default(), "unresolved value reached evaluator")),
+            Expression::Array(array) => array
+                .items
+                .iter()
+                .map(|value| self.expression_node(value))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Array),
+            Expression::Object(object) => object
+                .fields
+                .iter()
+                .map(|(name, value)| {
+                    self.expression_node(value)
+                        .map(|value| (name.clone(), value))
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()
+                .map(Value::Object),
+            Expression::Lambda(lambda) => Ok(Value::Lambda(LambdaValue {
+                params: lambda.params.clone(),
+                body: lambda.body.clone(),
+                scope: self.scope.clone(),
+            })),
+            Expression::Node(_) => Ok(Value::Node(self.circuit.node())),
+            Expression::UnaryOperation(operation) => {
+                let value = self.expression_node(&operation.arg)?;
+                match (operation.op.clone(), value) {
+                    (UnaryOperator::Negate, Value::Number(value)) => Ok(Value::Number(-value)),
+                    (UnaryOperator::Flip, Value::Boolean(value)) => Ok(Value::Boolean(!value)),
+                    _ => Err(self.error(
+                        operation.arg.meta.span,
+                        "invalid unary operation at runtime",
+                    )),
+                }
+            }
+            Expression::BinaryOperation(operation) => {
+                let lhs = self.expression_node(&operation.lhs)?;
+                let rhs = self.expression_node(&operation.rhs)?;
+                self.binary(operation.op.clone(), lhs, rhs, operation.lhs.meta.span)
+            }
+            Expression::Call(call) => {
+                let callee = self.expression_node(&call.expression)?;
+                let mut args = BTreeMap::new();
+                for (name, expression) in &call.args {
+                    args.insert(name.clone(), self.expression_node(expression)?);
+                }
+                match callee {
+                    Value::Lambda(lambda) => self.call(lambda, args, call.expression.meta.span),
+                    Value::NativeFunction(function) => {
+                        self.call_native(function, args, call.expression.meta.span)
+                    }
+                    _ => Err(self.error(
+                        call.expression.meta.span,
+                        "attempted to call a non-lambda value",
+                    )),
+                }
+            }
+            Expression::ObjectAccess(access) => {
+                let value = self.expression_node(&access.expression)?;
+                let Value::Object(fields) = value else {
+                    return Err(self.error(
+                        access.expression.meta.span,
+                        "field access requires an object",
+                    ));
+                };
+                fields.get(&access.field).cloned().ok_or_else(|| {
+                    self.error(
+                        access.expression.meta.span,
+                        format!("object has no field `{}`", access.field),
+                    )
+                })
+            }
+            Expression::Block(block) => self.block(&block.body),
+            Expression::Match(mtch) => {
+                let value = self.expression_node(&mtch.on)?;
+                for arm in &mtch.arms {
+                    let mut evaluator = Self {
+                        scope: self.scope.child(),
+                        circuit: self.circuit.clone(),
+                    };
+                    let matched = match &arm.pattern {
+                        Some(pattern) => evaluator.pattern_matches(pattern, &value)?,
+                        None => true,
+                    };
+                    if !matched {
+                        continue;
+                    }
+                    let guarded = match &arm.condition {
+                        Some(condition) => {
+                            matches!(evaluator.expression_node(condition)?, Value::Boolean(true))
+                        }
+                        None => true,
+                    };
+                    if guarded {
+                        return evaluator.expression_node(&arm.result);
+                    }
+                }
+                Ok(Value::None)
+            }
+        }
+    }
+
+    fn block(
+        &mut self,
+        statements: &[AstNode<Statement<PartialMetadata>, PartialMetadata>],
+    ) -> Result<Value, EvaluationError> {
+        let parent = self.scope.clone();
+        self.scope = self.scope.child();
+        let mut last = Value::None;
+        for statement in statements {
+            match self.statement(&statement.inner, statement.meta.span)? {
+                Flow::Continue(value) => last = value,
+                Flow::Return(value) => {
+                    self.scope = parent;
+                    return Ok(value);
+                }
+            }
+        }
+        self.scope = parent;
+        Ok(last)
+    }
+
+    fn call(
+        &self,
+        lambda: LambdaValue,
+        mut args: BTreeMap<String, Value>,
+        span: Span,
+    ) -> Result<Value, EvaluationError> {
+        let mut evaluator = Self {
+            scope: lambda.scope.child(),
+            circuit: self.circuit.clone(),
+        };
+        for symbol in lambda.params.keys().flatten() {
+            let Some(value) = args.remove(&symbol.name) else {
+                return Err(self.error(span, format!("missing argument `{}`", symbol.name)));
+            };
+            evaluator.scope.set(symbol.clone(), value);
+        }
+        if let Some(name) = args.keys().next() {
+            return Err(self.error(span, format!("unexpected argument `{name}`")));
+        }
+        evaluator.expression_node(&lambda.body)
+    }
+
+    fn call_native(
+        &self,
+        function: NativeFunction,
+        mut args: BTreeMap<String, Value>,
+        span: Span,
+    ) -> Result<Value, EvaluationError> {
+        let missing = |name: &str| self.error(span, format!("missing argument `{name}`"));
+        let node = |value: Option<Value>, name: &str| match value {
+            Some(Value::Node(node)) => Ok(node),
+            Some(_) => Err(self.error(span, format!("argument `{name}` must be a node"))),
+            None => Err(missing(name)),
+        };
+        let number = |value: Option<Value>, name: &str| match value {
+            Some(Value::Number(value)) => Ok(value),
+            Some(_) => Err(self.error(span, format!("argument `{name}` must be a number"))),
+            None => Err(missing(name)),
+        };
+
+        match function.kind {
+            NativeFunctionKind::Hook => {
+                let Some(Value::Lambda(simulate)) = args.remove("simulate") else {
+                    return Err(self.error(span, "hook argument `simulate` must be a lambda"));
+                };
+                let Some(nodes) = args.remove("nodes") else {
+                    return Err(missing("nodes"));
+                };
+                self.ensure_nodes(&nodes, span)?;
+                function.circuit.inner.borrow_mut().hooks.push(simulate);
+                Ok(Value::None)
+            }
+            NativeFunctionKind::UseNode => {
+                self.ensure_no_args(&args, span)?;
+                Ok(Value::Node(function.circuit.node()))
+            }
+            NativeFunctionKind::UseState => {
+                let initial = args.remove("initial").ok_or_else(|| missing("initial"))?;
+                self.ensure_no_args(&args, span)?;
+                let id = {
+                    let mut circuit = function.circuit.inner.borrow_mut();
+                    circuit.next_state_id += 1;
+                    let id = circuit.next_state_id;
+                    circuit.states.insert(
+                        id,
+                        StateSlot {
+                            current: initial,
+                            pending: None,
+                        },
+                    );
+                    id
+                };
+                Ok(Value::Object(BTreeMap::from([
+                    (
+                        "get".into(),
+                        Value::NativeFunction(NativeFunction {
+                            kind: NativeFunctionKind::StateGet(id),
+                            circuit: function.circuit.clone(),
+                        }),
+                    ),
+                    (
+                        "set".into(),
+                        Value::NativeFunction(NativeFunction {
+                            kind: NativeFunctionKind::StateSet(id),
+                            circuit: function.circuit,
+                        }),
+                    ),
+                ])))
+            }
+            NativeFunctionKind::UseEquation => {
+                let Some(Value::Lambda(equation)) = args.remove("equation") else {
+                    return Err(
+                        self.error(span, "use_equation argument `equation` must be a lambda")
+                    );
+                };
+                self.ensure_no_args(&args, span)?;
+                function.circuit.inner.borrow_mut().hooks.push(equation);
+                Ok(Value::None)
+            }
+            NativeFunctionKind::Voltage => {
+                let node = node(args.remove("node"), "node")?;
+                Ok(Value::Number(function.circuit.voltage(&node)))
+            }
+            NativeFunctionKind::Conductance => {
+                let between = args.remove("between").ok_or_else(|| missing("between"))?;
+                let Value::Array(nodes) = between else {
+                    return Err(self.error(span, "argument `between` must be a two-node array"));
+                };
+                if nodes.len() != 2 {
+                    return Err(self.error(span, "argument `between` must contain two nodes"));
+                }
+                let a = node(nodes.first().cloned(), "between[0]")?;
+                let b = node(nodes.get(1).cloned(), "between[1]")?;
+                let value = number(args.remove("value"), "value")?;
+                function
+                    .circuit
+                    .inner
+                    .borrow_mut()
+                    .conductances
+                    .push((a.id, b.id, value));
+                Ok(Value::None)
+            }
+            NativeFunctionKind::Current => {
+                let (from, to) = if let Some(between) = args.remove("between") {
+                    let Value::Array(nodes) = between else {
+                        return Err(self.error(span, "argument `between` must be a two-node array"));
+                    };
+                    if nodes.len() != 2 {
+                        return Err(self.error(span, "argument `between` must contain two nodes"));
+                    }
+                    (
+                        node(nodes.first().cloned(), "between[0]")?,
+                        node(nodes.get(1).cloned(), "between[1]")?,
+                    )
+                } else {
+                    (
+                        node(args.remove("from"), "from")?,
+                        node(args.remove("to"), "to")?,
+                    )
+                };
+                let value = number(args.remove("value"), "value")?;
+                function
+                    .circuit
+                    .inner
+                    .borrow_mut()
+                    .currents
+                    .push((from.id, to.id, value));
+                Ok(Value::None)
+            }
+            NativeFunctionKind::FixVoltage => {
+                let node = node(args.remove("node"), "node")?;
+                let value = number(args.remove("value"), "value")?;
+                function
+                    .circuit
+                    .inner
+                    .borrow_mut()
+                    .fixed
+                    .insert(node.id, value);
+                Ok(Value::None)
+            }
+            NativeFunctionKind::DriveVoltage => {
+                let node = node(args.remove("node"), "node")?;
+                let value = number(args.remove("value"), "value")?;
+                let conductance = number(args.remove("conductance"), "conductance")?;
+                if !conductance.is_finite() || conductance <= 0.0 {
+                    return Err(
+                        self.error(span, "argument `conductance` must be positive and finite")
+                    );
+                }
+                function.circuit.inner.borrow_mut().voltage_drives.push((
+                    node.id,
+                    value,
+                    conductance,
+                ));
+                Ok(Value::None)
+            }
+            NativeFunctionKind::Time => {
+                self.ensure_no_args(&args, span)?;
+                Ok(Value::Number(function.circuit.inner.borrow().time))
+            }
+            NativeFunctionKind::DeltaTime => {
+                self.ensure_no_args(&args, span)?;
+                Ok(Value::Number(function.circuit.inner.borrow().delta_time))
+            }
+            NativeFunctionKind::StateGet(id) => {
+                self.ensure_no_args(&args, span)?;
+                function
+                    .circuit
+                    .inner
+                    .borrow()
+                    .states
+                    .get(&id)
+                    .map(|state| state.current.clone())
+                    .ok_or_else(|| self.error(span, "state handle is no longer valid"))
+            }
+            NativeFunctionKind::StateSet(id) => {
+                let value = args.remove("value").ok_or_else(|| missing("value"))?;
+                self.ensure_no_args(&args, span)?;
+                let mut circuit = function.circuit.inner.borrow_mut();
+                let state = circuit
+                    .states
+                    .get_mut(&id)
+                    .ok_or_else(|| self.error(span, "state handle is no longer valid"))?;
+                state.pending = Some(value);
+                Ok(Value::None)
+            }
+        }
+    }
+
+    fn ensure_no_args(
+        &self,
+        args: &BTreeMap<String, Value>,
+        span: Span,
+    ) -> Result<(), EvaluationError> {
+        if let Some(name) = args.keys().next() {
+            Err(self.error(span, format!("unexpected argument `{name}`")))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn ensure_nodes(&self, value: &Value, span: Span) -> Result<(), EvaluationError> {
+        match value {
+            Value::Node(node) if Rc::ptr_eq(&node.circuit.inner, &self.circuit.inner) => Ok(()),
+            Value::Node(_) => Err(self.error(span, "hook node belongs to another circuit")),
+            Value::Array(values) => values
+                .iter()
+                .try_for_each(|value| self.ensure_nodes(value, span)),
+            Value::Object(values) => values
+                .values()
+                .try_for_each(|value| self.ensure_nodes(value, span)),
+            _ => Err(self.error(span, "hook `nodes` must contain only nodes")),
+        }
+    }
+
+    fn bind(
+        &self,
+        pattern: &AstNode<Pattern<PartialMetadata>, PartialMetadata>,
+        value: &Value,
+    ) -> Result<(), EvaluationError> {
+        if self.pattern_matches(pattern, value)? {
+            Ok(())
+        } else {
+            Err(self.error(pattern.meta.span, "value does not match binding pattern"))
+        }
+    }
+
+    fn pattern_matches(
+        &self,
+        pattern: &AstNode<Pattern<PartialMetadata>, PartialMetadata>,
+        value: &Value,
+    ) -> Result<bool, EvaluationError> {
+        match (&pattern.inner, value) {
+            (Pattern::Binding(ident), value) => {
+                if let Some(symbol) = &ident.ident {
+                    self.scope.set(symbol.clone(), value.clone());
+                }
+                Ok(true)
+            }
+            (Pattern::Primative(Primative::Boolean(a)), Value::Boolean(b)) => Ok(a == b),
+            (Pattern::Primative(Primative::Number(a)), Value::Number(b)) => Ok(a == b),
+            (Pattern::Primative(Primative::String(a)), Value::String(b)) => Ok(a == b),
+            (Pattern::Object(pattern), Value::Object(value)) => {
+                for (name, pattern) in &pattern.fields {
+                    let Some(value) = value.get(name) else {
+                        return Ok(false);
+                    };
+                    if !self.pattern_matches(pattern, value)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            (Pattern::Array(pattern), Value::Array(value))
+                if pattern.values.len() == value.len() =>
+            {
+                for (pattern, value) in pattern.values.iter().zip(value) {
+                    if !self.pattern_matches(pattern, value)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            (Pattern::Enum(_), _) => Ok(false),
+            _ => Ok(false),
+        }
+    }
+
+    fn binary(
+        &self,
+        op: BinaryOperator,
+        lhs: Value,
+        rhs: Value,
+        span: Span,
+    ) -> Result<Value, EvaluationError> {
+        match (op, lhs, rhs) {
+            (BinaryOperator::Add, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
+            (BinaryOperator::Sub, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a - b)),
+            (BinaryOperator::Mul, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a * b)),
+            (BinaryOperator::Div, Value::Number(a), Value::Number(b)) if b != 0.0 => {
+                Ok(Value::Number(a / b))
+            }
+            (BinaryOperator::Div, Value::Number(_), Value::Number(_)) => {
+                Err(self.error(span, "division by zero"))
+            }
+            (BinaryOperator::Equal, a, b) => Ok(Value::Boolean(a == b)),
+            (BinaryOperator::LessThan, Value::Number(a), Value::Number(b)) => {
+                Ok(Value::Boolean(a < b))
+            }
+            (BinaryOperator::GreaterThan, Value::Number(a), Value::Number(b)) => {
+                Ok(Value::Boolean(a > b))
+            }
+            (BinaryOperator::LessThanOrEqual, Value::Number(a), Value::Number(b)) => {
+                Ok(Value::Boolean(a <= b))
+            }
+            (BinaryOperator::GreaterThanOrEqual, Value::Number(a), Value::Number(b)) => {
+                Ok(Value::Boolean(a >= b))
+            }
+            (BinaryOperator::Union, Value::Object(mut a), Value::Object(b)) => {
+                a.extend(b);
+                Ok(Value::Object(a))
+            }
+            (BinaryOperator::Wire, Value::Node(a), Value::Node(b)) => {
+                a.connect(&b);
+                Ok(Value::Node(a))
+            }
+            _ => Err(self.error(span, "invalid binary operation at runtime")),
+        }
+    }
+}

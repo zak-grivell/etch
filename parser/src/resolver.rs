@@ -44,9 +44,36 @@ impl Default for SymbolResolver {
 
 impl SymbolResolver {
     pub fn new() -> Self {
+        let builtin_names = [
+            "hook",
+            "sim",
+            "use_node",
+            "use_state",
+            "use_equation",
+            "voltage",
+            "conductance",
+            "current",
+            "fix_voltage",
+            "drive_voltage",
+            "time",
+            "delta_time",
+        ];
+        let builtins = builtin_names
+            .into_iter()
+            .enumerate()
+            .map(|(id, name)| {
+                (
+                    name.into(),
+                    Symbol {
+                        id: id as u32,
+                        name: name.into(),
+                    },
+                )
+            })
+            .collect();
         Self {
-            scopes: vec![BTreeMap::new()],
-            next_symbol: 0,
+            scopes: vec![builtins],
+            next_symbol: (builtin_names.len() - 1) as u32,
         }
     }
 
