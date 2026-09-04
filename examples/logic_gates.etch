@@ -28,4 +28,4 @@ test(name: "and gate requires both inputs high", body: () -> {
     )
 });
 
-{ inverted: inverter.output, conjunction: and_gate.output }
+render(component: { inverted: inverter.output, conjunction: and_gate.output })

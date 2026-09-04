@@ -1,0 +1,75 @@
+from "std/sources.txt" import { VoltageSource };
+from "std/passive.txt" import { Resistor, Capacitor };
+from "std/analog.txt" import { OpAmp };
+from "std/digital.txt" import { AndGate, OrGate, DFlipFlop };
+
+// A deliberately dense circuit used to exercise anchor placement, waterfall
+// passives, shared rails, ground returns, fan-out, and anchor-to-anchor wiring.
+let analog_supply = VoltageSource(value: 12);
+let logic_supply = VoltageSource(value: 5);
+
+let divider_high = Resistor(resistance: 10000);
+let divider_low = Resistor(resistance: 10000);
+let input_filter = Capacitor(capacitance: 0.0000001);
+let amplifier_load = Resistor(resistance: 4700);
+
+let amplifier = OpAmp(
+    gain: 100,
+    low: 0,
+    high: 5,
+    output_conductance: 1000,
+);
+let enable_gate = AndGate(threshold: 2.5, low: 0, high: 5);
+let status_gate = OrGate(threshold: 2.5, low: 0, high: 5);
+let state = DFlipFlop(threshold: 2.5, low: 0, high: 5);
+
+analog_supply.positive <- divider_high.a;
+divider_high.b <- divider_low.a;
+divider_low.b <- ground;
+
+divider_high.b <- input_filter.a;
+input_filter.b <- amplifier.positive;
+ground <- amplifier.negative;
+amplifier.output <- amplifier_load.a;
+amplifier_load.b <- ground;
+
+amplifier.output <- enable_gate.a;
+logic_supply.positive <- enable_gate.b;
+enable_gate.output <- status_gate.a;
+ground <- status_gate.b;
+status_gate.output <- state.d;
+logic_supply.positive <- state.clock;
+
+net(label: "12V_ANALOG", node: analog_supply.positive);
+net(label: "5V_LOGIC", node: logic_supply.positive);
+net(label: "GROUND", node: ground);
+net(label: "DIVIDED", node: divider_high.b);
+net(label: "FILTERED", node: input_filter.b);
+net(label: "AMPLIFIED", node: amplifier.output);
+net(label: "STATUS", node: state.q);
+
+test(name: "shared ground remains at zero volts", body: () -> {
+    simulate(steps: 1, delta_time: 0.001);
+    assert_close(
+        actual: voltage(node: ground),
+        expected: 0,
+        tolerance: 0.000001,
+    )
+});
+
+test(name: "analog divider drives the mixed signal chain", body: () -> {
+    simulate(steps: 100, delta_time: 0.001);
+    assert_close(
+        actual: voltage(node: divider_high.b),
+        expected: 6,
+        tolerance: 0.000001,
+    )
+});
+
+render(component: {
+    analog_input: divider_high.b,
+    amplified: amplifier.output,
+    enabled: enable_gate.output,
+    status: state.q,
+    ground,
+})

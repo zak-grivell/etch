@@ -1,0 +1,152 @@
+from "std/sources.txt" import { VoltageSource };
+from "std/passive.txt" import { Resistor, Capacitor, Inductor };
+from "components.etch" import {
+    Stm32f407vet, Sx1278, Max3485, NeoM8n, Adxl343, Bmp280, Lis3mdl,
+    Regulator33, Connector2, Connector3, Connector4,
+};
+
+// Four layers are strongly recommended: signals / solid GND / 3V3 / signals.
+pcb_config(width: 100, height: 70, layers: 4, min_trace_width: 0.2, clearance: 0.2);
+
+let power = section(name: "Power input and regulation", body: () -> {
+    let battery = VoltageSource(value: 5);
+    let input = Connector2();
+    let regulator = Regulator33();
+    let bulk_in = Capacitor(capacitance: 0.00001);
+    let bypass_in = Capacitor(capacitance: 0.0000001);
+    let bulk_out = Capacitor(capacitance: 0.00001);
+    let bypass_out = Capacitor(capacitance: 0.0000001);
+    input.pin1 <- battery.positive;
+    input.pin2 <- ground;
+    input.pin1 <- regulator.input;
+    regulator.ground <- ground;
+    bulk_in.a <- regulator.input; bulk_in.b <- ground;
+    bypass_in.a <- regulator.input; bypass_in.b <- ground;
+    bulk_out.a <- regulator.output; bulk_out.b <- ground;
+    bypass_out.a <- regulator.output; bypass_out.b <- ground;
+    net(label: "VIN_5V", node: regulator.input);
+    net(label: "3V3", node: regulator.output);
+    net(label: "GND", node: ground);
+    return { battery, ground, input, regulator };
+});
+
+let controller = section(name: "STM32F407 flight controller", body: () -> {
+    let mcu = Stm32f407vet();
+    let reset_pullup = Resistor(resistance: 10000);
+    let reset_cap = Capacitor(capacitance: 0.0000001);
+    let boot_pulldown = Resistor(resistance: 10000);
+    let vcap1 = Capacitor(capacitance: 0.0000022);
+    let vcap2 = Capacitor(capacitance: 0.0000022);
+    let analog_filter = Inductor(inductance: 0.00001);
+    let analog_cap = Capacitor(capacitance: 0.000001);
+    let swd = Connector4();
+
+    net(label: "3V3", node: mcu.vbat);
+    net(label: "3V3", node: mcu.vdd_1); net(label: "3V3", node: mcu.vdd_2);
+    net(label: "3V3", node: mcu.vdd_3); net(label: "3V3", node: mcu.vdd_4);
+    net(label: "3V3", node: mcu.vdd_5); net(label: "3V3", node: mcu.vdd_6);
+    net(label: "GND", node: mcu.vss_1); net(label: "GND", node: mcu.vss_2);
+    net(label: "GND", node: mcu.vss_3); net(label: "GND", node: mcu.vss_4);
+    net(label: "GND", node: mcu.vssa);
+    net(label: "3V3", node: analog_filter.a); analog_filter.b <- mcu.vdda; mcu.vref <- mcu.vdda;
+    analog_cap.a <- mcu.vdda; net(label: "GND", node: analog_cap.b);
+    vcap1.a <- mcu.vcap_1; net(label: "GND", node: vcap1.b);
+    vcap2.a <- mcu.vcap_2; net(label: "GND", node: vcap2.b);
+    net(label: "3V3", node: reset_pullup.a); reset_pullup.b <- mcu.nrst;
+    reset_cap.a <- mcu.nrst; net(label: "GND", node: reset_cap.b);
+    boot_pulldown.a <- mcu.boot0; net(label: "GND", node: boot_pulldown.b);
+    swd.pin1 <- mcu.pa13; swd.pin2 <- mcu.pa14;
+    net(label: "GND", node: swd.pin3); net(label: "3V3", node: swd.pin4);
+
+    net(label: "LORA_NSS", node: mcu.pa4); net(label: "SPI1_SCK", node: mcu.pa5);
+    net(label: "SPI1_MISO", node: mcu.pa6); net(label: "SPI1_MOSI", node: mcu.pa7);
+    net(label: "I2C1_SCL", node: mcu.pb6); net(label: "I2C1_SDA", node: mcu.pb7);
+    net(label: "LORA_RESET", node: mcu.pc4); net(label: "LORA_DIO0", node: mcu.pc5);
+    net(label: "ACCEL_INT", node: mcu.pb0); net(label: "MAG_DRDY", node: mcu.pb1);
+    net(label: "RS485_DIR", node: mcu.pd4);
+    net(label: "RS485_TX", node: mcu.pd5); net(label: "RS485_RX", node: mcu.pd6);
+    net(label: "GPS_TX", node: mcu.pd8); net(label: "GPS_RX", node: mcu.pd9);
+    return { mcu, swd };
+});
+
+let decoupling = section(name: "Local MCU decoupling", body: () -> {
+    let c1 = Capacitor(capacitance: 0.0000001); let c2 = Capacitor(capacitance: 0.0000001);
+    let c3 = Capacitor(capacitance: 0.0000001); let c4 = Capacitor(capacitance: 0.0000001);
+    let c5 = Capacitor(capacitance: 0.0000001); let c6 = Capacitor(capacitance: 0.0000001);
+    net(label: "3V3", node: c1.a); net(label: "GND", node: c1.b);
+    net(label: "3V3", node: c2.a); net(label: "GND", node: c2.b);
+    net(label: "3V3", node: c3.a); net(label: "GND", node: c3.b);
+    net(label: "3V3", node: c4.a); net(label: "GND", node: c4.b);
+    net(label: "3V3", node: c5.a); net(label: "GND", node: c5.b);
+    net(label: "3V3", node: c6.a); net(label: "GND", node: c6.b);
+    return { c1, c2, c3, c4, c5, c6 };
+});
+
+let radio = section(name: "SX1278 LoRa radio", body: () -> {
+    let lora = Sx1278();
+    let antenna = Connector2();
+    let rf_dc_block = Capacitor(capacitance: 0.0000000001);
+    let supply_cap = Capacitor(capacitance: 0.00001);
+    net(label: "SPI1_SCK", node: lora.sck); net(label: "SPI1_MISO", node: lora.miso);
+    net(label: "SPI1_MOSI", node: lora.mosi); net(label: "LORA_NSS", node: lora.nss);
+    net(label: "LORA_RESET", node: lora.reset); net(label: "LORA_DIO0", node: lora.dio0);
+    net(label: "3V3", node: lora.vbat_ana); net(label: "3V3", node: lora.vbat_dig); net(label: "3V3", node: lora.vbat_rf);
+    net(label: "GND", node: lora.gnd_1); net(label: "GND", node: lora.gnd_2); net(label: "GND", node: lora.gnd_3);
+    net(label: "GND", node: lora.gnd_4); net(label: "GND", node: lora.gnd_5);
+    net(label: "3V3", node: supply_cap.a); net(label: "GND", node: supply_cap.b);
+    lora.pa_boost <- rf_dc_block.a; rf_dc_block.b <- antenna.pin1; net(label: "GND", node: antenna.pin2);
+    return { lora, antenna };
+});
+
+let navigation = section(name: "GPS receiver", body: () -> {
+    let gps = NeoM8n(); let antenna = Connector2();
+    let supply_cap = Capacitor(capacitance: 0.00001); let rf_dc_block = Capacitor(capacitance: 0.0000000001);
+    net(label: "GPS_RX", node: gps.tx); net(label: "GPS_TX", node: gps.rx);
+    net(label: "3V3", node: gps.vcc); net(label: "3V3", node: gps.v_bckp);
+    net(label: "GND", node: gps.gnd_1); net(label: "GND", node: gps.gnd_2); net(label: "GND", node: gps.gnd_3);
+    gps.rf_in <- rf_dc_block.a; rf_dc_block.b <- antenna.pin1; net(label: "GND", node: antenna.pin2);
+    net(label: "3V3", node: supply_cap.a); net(label: "GND", node: supply_cap.b);
+    return { gps, antenna };
+});
+
+let sensors = section(name: "I2C inertial and environmental sensors", body: () -> {
+    let accel = Adxl343(); let baro = Bmp280(); let mag = Lis3mdl();
+    let scl_pullup = Resistor(resistance: 4700); let sda_pullup = Resistor(resistance: 4700);
+    let accel_cap = Capacitor(capacitance: 0.0000001); let baro_cap = Capacitor(capacitance: 0.0000001);
+    let mag_cap = Capacitor(capacitance: 0.0000001); let mag_c1 = Capacitor(capacitance: 0.0000001);
+    net(label: "3V3", node: scl_pullup.a); net(label: "I2C1_SCL", node: scl_pullup.b);
+    net(label: "3V3", node: sda_pullup.a); net(label: "I2C1_SDA", node: sda_pullup.b);
+    net(label: "I2C1_SCL", node: accel.scl); net(label: "I2C1_SDA", node: accel.sda);
+    net(label: "3V3", node: accel.vdd_io); net(label: "3V3", node: accel.vs); net(label: "3V3", node: accel.cs);
+    net(label: "GND", node: accel.sdo); net(label: "ACCEL_INT", node: accel.int1);
+    net(label: "GND", node: accel.gnd_1); net(label: "GND", node: accel.gnd_2); net(label: "GND", node: accel.gnd_3);
+    net(label: "I2C1_SCL", node: baro.scl); net(label: "I2C1_SDA", node: baro.sda);
+    net(label: "3V3", node: baro.vdd); net(label: "3V3", node: baro.vdd_io); net(label: "3V3", node: baro.cs);
+    net(label: "GND", node: baro.sdo); net(label: "GND", node: baro.gnd_1); net(label: "GND", node: baro.gnd_2);
+    net(label: "I2C1_SCL", node: mag.scl); net(label: "I2C1_SDA", node: mag.sda);
+    net(label: "3V3", node: mag.vdd); net(label: "3V3", node: mag.vdd_io); net(label: "3V3", node: mag.cs);
+    net(label: "GND", node: mag.sdo); net(label: "MAG_DRDY", node: mag.drdy);
+    net(label: "GND", node: mag.gnd_1); net(label: "GND", node: mag.gnd_2); net(label: "GND", node: mag.gnd_3);
+    mag_c1.a <- mag.c1; net(label: "GND", node: mag_c1.b);
+    net(label: "3V3", node: accel_cap.a); net(label: "GND", node: accel_cap.b);
+    net(label: "3V3", node: baro_cap.a); net(label: "GND", node: baro_cap.b);
+    net(label: "3V3", node: mag_cap.a); net(label: "GND", node: mag_cap.b);
+    return { accel, baro, mag };
+});
+
+let field_bus = section(name: "Protected half-duplex RS-485", body: () -> {
+    let transceiver = Max3485(); let connector = Connector3();
+    let termination = Resistor(resistance: 120); let bias_high = Resistor(resistance: 680); let bias_low = Resistor(resistance: 680);
+    let supply_cap = Capacitor(capacitance: 0.0000001);
+    net(label: "RS485_RX", node: transceiver.ro); net(label: "RS485_TX", node: transceiver.di);
+    transceiver.re <- transceiver.de; net(label: "RS485_DIR", node: transceiver.de);
+    net(label: "3V3", node: transceiver.vcc); net(label: "GND", node: transceiver.gnd);
+    transceiver.a <- connector.pin1; transceiver.b <- connector.pin2; net(label: "GND", node: connector.pin3);
+    termination.a <- transceiver.a; termination.b <- transceiver.b;
+    net(label: "3V3", node: bias_high.a); bias_high.b <- transceiver.a;
+    bias_low.a <- transceiver.b; net(label: "GND", node: bias_low.b);
+    net(label: "3V3", node: supply_cap.a); net(label: "GND", node: supply_cap.b);
+    return { transceiver, connector, termination };
+});
+
+render(component: { power, controller, decoupling, radio, navigation, sensors, field_bus })

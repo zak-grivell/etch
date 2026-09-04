@@ -1,14 +1,13 @@
-from "std/sources.txt" import { VoltageSource, Ground };
+from "std/sources.txt" import { VoltageSource };
 from "std/passive.txt" import { Capacitor, Resistor };
 
 let supply = VoltageSource(value: 1);
-let ground = Ground();
 let coupling = Capacitor(capacitance: 0.000001);
 let load = Resistor(resistance: 100);
 
 supply.positive <- coupling.a;
 coupling.b <- load.a;
-load.b <- ground.node;
+load.b <- ground;
 
 test(name: "capacitor produces a decaying step response", body: () -> {
     simulate(steps: 1, delta_time: 0.001);
@@ -35,4 +34,4 @@ display(
     },
 );
 
-{ input: coupling.a, output: coupling.b }
+render(component: { input: coupling.a, output: coupling.b })

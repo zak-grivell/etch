@@ -1,12 +1,11 @@
-from "std/sources.txt" import { VoltageSource, Ground };
+from "std/sources.txt" import { VoltageSource };
 from "std/passive.txt" import { Resistor };
 
 let power = section(name: "Power supply", body: () -> {
     let supply = VoltageSource(value: 5);
-    let ground = Ground();
     net(label: "VCC", node: supply.positive);
     net(label: "GND", node: supply.negative);
-    net(label: "GND", node: ground.node);
+    net(label: "GND", node: ground);
     return { supply, ground };
 });
 
@@ -29,4 +28,4 @@ test(name: "net labels connect circuit sections", body: () -> {
     )
 });
 
-{ power, sensor }
+render(component: { power, sensor })

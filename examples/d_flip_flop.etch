@@ -23,4 +23,4 @@ test(name: "flip flop captures data on a rising edge", body: () -> {
     )
 });
 
-{ q: flip_flop.q }
+render(component: { q: flip_flop.q })

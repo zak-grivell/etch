@@ -1,0 +1,144 @@
+// Board-level components used by the flight computer example.
+// Each component includes an editable KiCad symbol/footprint mapping.
+
+export let Stm32f407vet = () -> {
+    let vbat = use_node();
+    let vdd_1 = use_node(); let vdd_2 = use_node(); let vdd_3 = use_node();
+    let vdd_4 = use_node(); let vdd_5 = use_node(); let vdd_6 = use_node();
+    let vss_1 = use_node(); let vss_2 = use_node(); let vss_3 = use_node(); let vss_4 = use_node();
+    let vdda = use_node(); let vssa = use_node(); let vref = use_node();
+    let vcap_1 = use_node(); let vcap_2 = use_node();
+    let nrst = use_node(); let boot0 = use_node();
+    let pa4 = use_node(); let pa5 = use_node(); let pa6 = use_node(); let pa7 = use_node();
+    let pa13 = use_node(); let pa14 = use_node();
+    let pb0 = use_node(); let pb1 = use_node(); let pb6 = use_node(); let pb7 = use_node();
+    let pc0 = use_node(); let pc4 = use_node(); let pc5 = use_node();
+    let pd4 = use_node(); let pd5 = use_node(); let pd6 = use_node(); let pd8 = use_node(); let pd9 = use_node();
+    use_symbol(kind: "STM32F407VET6", ports: {
+        vbat, vdd_1, vdd_2, vdd_3, vdd_4, vdd_5, vdd_6,
+        vss_1, vss_2, vss_3, vss_4, vdda, vssa, vref, vcap_1, vcap_2,
+        nrst, boot0, pa4, pa5, pa6, pa7, pa13, pa14,
+        pb0, pb1, pb6, pb7, pc0, pc4, pc5, pd4, pd5, pd6, pd8, pd9,
+    }, kicad: {
+        symbol: "MCU_ST_STM32F4:STM32F407VETx",
+        footprint: "Package_QFP:LQFP-100_14x14mm_P0.5mm",
+        pins: {
+            vbat: "6", vdd_1: "11", vdd_2: "19", vdd_3: "28", vdd_4: "50", vdd_5: "75", vdd_6: "100",
+            vss_1: "10", vss_2: "27", vss_3: "74", vss_4: "99", vdda: "22", vssa: "20", vref: "21",
+            vcap_1: "49", vcap_2: "73", nrst: "14", boot0: "94",
+            pa4: "29", pa5: "30", pa6: "31", pa7: "32", pa13: "72", pa14: "76",
+            pb0: "35", pb1: "36", pb6: "92", pb7: "93",
+            pc0: "15", pc4: "33", pc5: "34", pd4: "85", pd5: "86", pd6: "87", pd8: "55", pd9: "56",
+        },
+    });
+    return {
+        vbat, vdd_1, vdd_2, vdd_3, vdd_4, vdd_5, vdd_6,
+        vss_1, vss_2, vss_3, vss_4, vdda, vssa, vref, vcap_1, vcap_2,
+        nrst, boot0, pa4, pa5, pa6, pa7, pa13, pa14,
+        pb0, pb1, pb6, pb7, pc0, pc4, pc5, pd4, pd5, pd6, pd8, pd9,
+    };
+};
+
+export let Sx1278 = () -> {
+    let rfi = use_node(); let vr_ana = use_node(); let vbat_ana = use_node(); let vr_dig = use_node();
+    let reset = use_node(); let dio0 = use_node(); let dio1 = use_node();
+    let vbat_dig = use_node(); let sck = use_node(); let miso = use_node(); let mosi = use_node(); let nss = use_node();
+    let gnd_1 = use_node(); let gnd_2 = use_node(); let gnd_3 = use_node(); let gnd_4 = use_node(); let gnd_5 = use_node();
+    let vbat_rf = use_node(); let vr_pa = use_node(); let pa_boost = use_node();
+    use_symbol(kind: "SX1278 LoRa radio", ports: {
+        rfi, vr_ana, vbat_ana, vr_dig, reset, dio0, dio1, vbat_dig,
+        sck, miso, mosi, nss, gnd_1, gnd_2, gnd_3, gnd_4, gnd_5, vbat_rf, vr_pa, pa_boost,
+    }, kicad: {
+        symbol: "RF:SX1278", footprint: "Package_DFN_QFN:QFN-28-1EP_6x6mm_P0.65mm_EP4.8x4.8mm",
+        pins: {
+            rfi: "1", vr_ana: "2", vbat_ana: "3", vr_dig: "4", reset: "7", dio0: "8", dio1: "9",
+            vbat_dig: "14", gnd_1: "15", sck: "16", miso: "17", mosi: "18", nss: "19",
+            gnd_2: "21", gnd_3: "22", gnd_4: "23", vbat_rf: "24", vr_pa: "25", gnd_5: "26", pa_boost: "27",
+        },
+    });
+    return { rfi, vr_ana, vbat_ana, vr_dig, reset, dio0, dio1, vbat_dig, sck, miso, mosi, nss,
+        gnd_1, gnd_2, gnd_3, gnd_4, gnd_5, vbat_rf, vr_pa, pa_boost };
+};
+
+export let Max3485 = () -> {
+    let ro = use_node(); let re = use_node(); let de = use_node(); let di = use_node();
+    let gnd = use_node(); let a = use_node(); let b = use_node(); let vcc = use_node();
+    use_symbol(kind: "MAX3485 RS-485", ports: { ro, re, de, di, gnd, a, b, vcc }, kicad: {
+        symbol: "Interface_UART:MAX3485", footprint: "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+        pins: { ro: "1", re: "2", de: "3", di: "4", gnd: "5", a: "6", b: "7", vcc: "8" },
+    });
+    return { ro, re, de, di, gnd, a, b, vcc };
+};
+
+export let NeoM8n = () -> {
+    let reset = use_node(); let vcc_rf = use_node(); let rf_in = use_node(); let tx = use_node(); let rx = use_node();
+    let v_bckp = use_node(); let vcc = use_node(); let gnd_1 = use_node(); let gnd_2 = use_node(); let gnd_3 = use_node();
+    use_symbol(kind: "u-blox NEO-M8N GPS", ports: { reset, vcc_rf, rf_in, tx, rx, v_bckp, vcc, gnd_1, gnd_2, gnd_3 }, kicad: {
+        symbol: "RF_GPS:NEO-M8N", footprint: "RF_GPS:ublox_NEO",
+        pins: { reset: "8", vcc_rf: "9", gnd_1: "10", rf_in: "11", gnd_2: "12", tx: "20", rx: "21", v_bckp: "22", vcc: "23", gnd_3: "24" },
+    });
+    return { reset, vcc_rf, rf_in, tx, rx, v_bckp, vcc, gnd_1, gnd_2, gnd_3 };
+};
+
+export let Adxl343 = () -> {
+    let vdd_io = use_node(); let vs = use_node(); let cs = use_node(); let int1 = use_node();
+    let sdo = use_node(); let sda = use_node(); let scl = use_node(); let gnd_1 = use_node(); let gnd_2 = use_node(); let gnd_3 = use_node();
+    use_symbol(kind: "ADXL343 accelerometer", ports: { vdd_io, vs, cs, int1, sdo, sda, scl, gnd_1, gnd_2, gnd_3 }, kicad: {
+        symbol: "Sensor_Motion:ADXL343", footprint: "Package_LGA:LGA-14_3x5mm_P0.8mm_LayoutBorder1x6y",
+        pins: { vdd_io: "1", gnd_1: "2", gnd_2: "4", gnd_3: "5", vs: "6", cs: "7", int1: "8", sdo: "12", sda: "13", scl: "14" },
+    });
+    return { vdd_io, vs, cs, int1, sdo, sda, scl, gnd_1, gnd_2, gnd_3 };
+};
+
+export let Bmp280 = () -> {
+    let gnd_1 = use_node(); let cs = use_node(); let sda = use_node(); let scl = use_node();
+    let sdo = use_node(); let vdd_io = use_node(); let gnd_2 = use_node(); let vdd = use_node();
+    use_symbol(kind: "BMP280 barometer", ports: { gnd_1, cs, sda, scl, sdo, vdd_io, gnd_2, vdd }, kicad: {
+        symbol: "Sensor_Pressure:BMP280", footprint: "Package_LGA:Bosch_LGA-8_2x2.5mm_P0.65mm_ClockwisePinNumbering",
+        pins: { gnd_1: "1", cs: "2", sda: "3", scl: "4", sdo: "5", vdd_io: "6", gnd_2: "7", vdd: "8" },
+    });
+    return { gnd_1, cs, sda, scl, sdo, vdd_io, gnd_2, vdd };
+};
+
+export let Lis3mdl = () -> {
+    let scl = use_node(); let c1 = use_node(); let vdd = use_node(); let vdd_io = use_node(); let int = use_node();
+    let drdy = use_node(); let sdo = use_node(); let cs = use_node(); let sda = use_node();
+    let gnd_1 = use_node(); let gnd_2 = use_node(); let gnd_3 = use_node();
+    use_symbol(kind: "LIS3MDL magnetometer", ports: { scl, c1, vdd, vdd_io, int, drdy, sdo, cs, sda, gnd_1, gnd_2, gnd_3 }, kicad: {
+        symbol: "Sensor_Magnetic:LIS3MDL", footprint: "Package_LGA:LGA-12_2x2mm_P0.5mm",
+        pins: { scl: "1", gnd_1: "2", gnd_2: "3", c1: "4", vdd: "5", vdd_io: "6", int: "7", drdy: "8", sdo: "9", cs: "10", sda: "11", gnd_3: "12" },
+    });
+    return { scl, c1, vdd, vdd_io, int, drdy, sdo, cs, sda, gnd_1, gnd_2, gnd_3 };
+};
+
+export let Regulator33 = () -> {
+    let input = use_node(); let output = use_node(); let ground = use_node();
+    use_symbol(kind: "3.3 V regulator", ports: { input, output, ground }, kicad: {
+        symbol: "Regulator_Linear:AP2112K-3.3", footprint: "Package_TO_SOT_SMD:SOT-23-5", pins: { input: "1", ground: "2", output: "5" },
+    });
+    return { input, output, ground };
+};
+
+export let Connector2 = () -> {
+    let pin1 = use_node(); let pin2 = use_node();
+    use_symbol(kind: "2-pin connector", ports: { pin1, pin2 }, kicad: {
+        symbol: "Connector_Generic:Conn_01x02", footprint: "Connector_JST:JST_GH_BM02B-GHS-TBT_1x02-1MP_P1.25mm_Horizontal", pins: { pin1: "1", pin2: "2" },
+    });
+    return { pin1, pin2 };
+};
+
+export let Connector3 = () -> {
+    let pin1 = use_node(); let pin2 = use_node(); let pin3 = use_node();
+    use_symbol(kind: "3-pin connector", ports: { pin1, pin2, pin3 }, kicad: {
+        symbol: "Connector_Generic:Conn_01x03", footprint: "Connector_JST:JST_GH_BM03B-GHS-TBT_1x03-1MP_P1.25mm_Horizontal", pins: { pin1: "1", pin2: "2", pin3: "3" },
+    });
+    return { pin1, pin2, pin3 };
+};
+
+export let Connector4 = () -> {
+    let pin1 = use_node(); let pin2 = use_node(); let pin3 = use_node(); let pin4 = use_node();
+    use_symbol(kind: "4-pin connector", ports: { pin1, pin2, pin3, pin4 }, kicad: {
+        symbol: "Connector_Generic:Conn_01x04", footprint: "Connector_JST:JST_GH_BM04B-GHS-TBT_1x04-1MP_P1.25mm_Horizontal", pins: { pin1: "1", pin2: "2", pin3: "3", pin4: "4" },
+    });
+    return { pin1, pin2, pin3, pin4 };
+};

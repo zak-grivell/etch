@@ -22,4 +22,4 @@ test(name: "op amp follows its differential equation", body: () -> {
     )
 });
 
-{ output: amplifier.output }
+render(component: { output: amplifier.output })
