@@ -98,7 +98,7 @@ fn writes_schematic_pcb_and_display_svgs() {
     let pcb = fs::read_to_string(pcb).unwrap();
     assert!(pcb.starts_with("<svg"));
     assert!(pcb.contains("2 layer(s)"));
-    assert!(pcb.contains("routed net(s)"));
+    assert!(pcb.contains("routed connection(s)"));
 
     let kicad_schematic = directory.0.join("board.kicad_sch");
     execute(Cli {

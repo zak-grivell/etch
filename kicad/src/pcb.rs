@@ -42,8 +42,12 @@ pub fn pcb(circuit: &CircuitDesign) -> Result<String, String> {
         .map(|(index, root)| (*root, index + 1))
         .collect::<BTreeMap<_, _>>();
     let mut out = String::from(
-        "(kicad_pcb (version 20240108) (generator etch)\n  (general (thickness 1.6))\n  (paper \"A4\")\n  (layers\n    (0 \"F.Cu\" signal)\n    (31 \"B.Cu\" signal)\n    (36 \"B.SilkS\" user \"b.silkscreen\")\n    (37 \"F.SilkS\" user \"f.silkscreen\")\n    (44 \"Edge.Cuts\" user)\n  )\n  (setup (pad_to_mask_clearance 0))\n  (net 0 \"\")\n",
+        "(kicad_pcb (version 20240108) (generator etch)\n  (general (thickness 1.6))\n  (paper \"A4\")\n  (layers\n    (0 \"F.Cu\" signal)\n",
     );
+    for layer in 1..config.layers.saturating_sub(1) {
+        writeln!(out, "    ({} \"In{layer}.Cu\" signal)", layer * 2).unwrap();
+    }
+    out.push_str("    (31 \"B.Cu\" signal)\n    (36 \"B.SilkS\" user \"b.silkscreen\")\n    (37 \"F.SilkS\" user \"f.silkscreen\")\n    (44 \"Edge.Cuts\" user)\n  )\n  (setup (pad_to_mask_clearance 0))\n  (net 0 \"\")\n");
     for (root, id) in &net_ids {
         writeln!(out, "  (net {id} \"{}\")", esc(names.get(root).unwrap())).unwrap();
     }
@@ -61,6 +65,7 @@ pub fn pcb(circuit: &CircuitDesign) -> Result<String, String> {
         *count += 1;
         let reference = format!("{prefix}{count}");
         writeln!(out, "  (footprint \"{}\"", esc(&link.footprint)).unwrap();
+        // Pad offsets below already include the packer's selected rotation.
         writeln!(out, "    (layer \"F.Cu\") (at {} {})", center.x, center.y).unwrap();
         writeln!(out, "    (uuid \"{}\")", uuid(index + 1, 0)).unwrap();
         writeln!(out, "    (property \"Reference\" \"{}\" (at 0 -2 0) (layer \"F.SilkS\") (effects (font (size 1 1) (thickness 0.15))))", esc(&reference)).unwrap();
@@ -70,7 +75,7 @@ pub fn pcb(circuit: &CircuitDesign) -> Result<String, String> {
             let pad = map(placed.pads[node]);
             let pad_x = pad.x - center.x;
             let pad_y = pad.y - center.y;
-            writeln!(out, "    (pad \"{}\" thru_hole circle (at {pad_x} {pad_y}) (size 1.5 1.5) (drill 0.8) (layers \"*.Cu\" \"*.Mask\") (net {} \"{}\") (uuid \"{}\"))", esc(&link.pins[port]), net_ids[&root], esc(names.get(&root).unwrap()), uuid(index + 1, pad_index + 1)).unwrap();
+            writeln!(out, "    (pad \"{}\" thru_hole circle (at {pad_x} {pad_y}) (size 1.2 1.2) (drill 0.6) (layers \"*.Cu\" \"*.Mask\") (net {} \"{}\") (uuid \"{}\"))", esc(&link.pins[port]), net_ids[&root], esc(names.get(&root).unwrap()), uuid(index + 1, pad_index + 1)).unwrap();
         }
         out.push_str("  )\n");
     }
@@ -78,15 +83,15 @@ pub fn pcb(circuit: &CircuitDesign) -> Result<String, String> {
         let Some(net) = net_ids.get(&trace.root).copied() else {
             continue;
         };
-        let layer = if trace.layer % 2 == 1 { "B.Cu" } else { "F.Cu" };
-        let points = trace.points.map(map);
+        let layer = copper_layer_name(trace.layer, config.layers);
+        let points = trace.points.iter().copied().map(map).collect::<Vec<_>>();
         for pair in points.windows(2) {
             segment(
                 &mut out,
                 pair[0],
                 pair[1],
                 config.min_trace_width,
-                layer,
+                &layer,
                 net,
             );
         }
@@ -105,6 +110,16 @@ pub fn pcb(circuit: &CircuitDesign) -> Result<String, String> {
     }
     out.push_str(")\n");
     Ok(out)
+}
+
+fn copper_layer_name(layer: usize, count: usize) -> String {
+    if layer == 0 || count == 1 {
+        "F.Cu".into()
+    } else if layer + 1 >= count {
+        "B.Cu".into()
+    } else {
+        format!("In{layer}.Cu")
+    }
 }
 
 fn ensure_links(circuit: &CircuitDesign) -> Result<(), String> {
@@ -130,4 +145,17 @@ fn segment(out: &mut String, a: Point, b: Point, width: f64, layer: &str, net: u
         a.x, a.y, b.x, b.y
     )
     .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_configured_copper_stack_to_kicad_layers() {
+        assert_eq!(copper_layer_name(0, 4), "F.Cu");
+        assert_eq!(copper_layer_name(1, 4), "In1.Cu");
+        assert_eq!(copper_layer_name(2, 4), "In2.Cu");
+        assert_eq!(copper_layer_name(3, 4), "B.Cu");
+    }
 }
