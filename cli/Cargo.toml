@@ -9,5 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.6.4", features = ["derive"] }
-parser = { path = "../parser" }
 evaluator = { path = "../evaluator" }
+graph_render = { path = "../graph_render" }
+kicad = { path = "../kicad" }
+pcb = { path = "../pcb" }
+schematic = { path = "../schematic" }

@@ -1,3 +1,3 @@
 [workspace]
 resolver = "3"
-members = ["ast", "ast_macros", "cli", "evaluator", "parser", "results"]
+members = ["ast", "ast_macros", "circuit_ir", "cli", "etch_lsp", "evaluator", "graph_render", "highlighting", "kicad", "parser", "pcb", "render_utils", "schematic"]

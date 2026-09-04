@@ -35,13 +35,30 @@
           cargo = rustToolchain;
           rustc = rustToolchain;
         };
-      in {
-        packages.default = naersk'.buildPackage {
+
+        etch = naersk'.buildPackage {
+          pname = "etch";
           src = ./.;
+        };
+      in {
+        packages = {
+          inherit etch;
+          default = etch;
+        };
+
+        apps = {
+          etch = flake-utils.lib.mkApp {
+            drv = etch;
+            exePath = "/bin/etch";
+          };
+          default = self.apps.${system}.etch;
         };
 
         devShells.default = pkgs.mkShell {
           packages = [
+            (pkgs.writeShellScriptBin "etch" ''
+              exec cargo run --bin etch -- "$@"
+            '')
             pkgs.alejandra
             pkgs.rust-analyzer
             rustToolchain

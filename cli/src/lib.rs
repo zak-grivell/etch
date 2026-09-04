@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use evaluator::{RunError, SourceProvider, Value, evaluate};
 
+#[cfg(test)]
+mod test;
+
 #[derive(Parser, Debug)]
 #[command(name = "etch", version, about = "Etch circuit language tools")]
 pub struct Cli {
@@ -36,6 +39,25 @@ pub enum Command {
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
+    /// Auto-place and autoroute a PCB, then generate an SVG preview.
+    Pcb {
+        file: PathBuf,
+        /// Write to this path; omit it to print SVG to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Export an editable KiCad schematic (.kicad_sch).
+    KicadSchematic {
+        file: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Export an editable KiCad PCB (.kicad_pcb).
+    KicadPcb {
+        file: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
     /// Run all registered displays and write their SVG graphs.
     Display {
         file: PathBuf,
@@ -54,6 +76,7 @@ pub enum CliError {
     InvalidSimulation(String),
     TestsFailed(Vec<String>),
     DisplaysFailed(Vec<String>),
+    Generation(String),
 }
 
 impl fmt::Display for CliError {
@@ -65,6 +88,7 @@ impl fmt::Display for CliError {
             Self::TestsFailed(lines) | Self::DisplaysFailed(lines) => {
                 f.write_str(&lines.join("\n"))
             }
+            Self::Generation(message) => f.write_str(message),
         }
     }
 }
@@ -156,7 +180,7 @@ pub fn execute(cli: Cli) -> Result<Vec<String>, CliError> {
         }
         Command::Schematic { file, output } => {
             let evaluated = evaluate_file(&file)?;
-            let svg = evaluated.schematic_svg();
+            let svg = schematic::render(&evaluated.design());
             match output {
                 Some(path) => {
                     write_file(&path, &svg)?;
@@ -164,6 +188,32 @@ pub fn execute(cli: Cli) -> Result<Vec<String>, CliError> {
                 }
                 None => Ok(vec![svg]),
             }
+        }
+        Command::Pcb { file, output } => {
+            let evaluated = evaluate_file(&file)?;
+            let svg = pcb::render(&evaluated.design()).map_err(CliError::Generation)?;
+            match output {
+                Some(path) => {
+                    write_file(&path, &svg)?;
+                    Ok(vec![format!("wrote PCB to {}", path.display())])
+                }
+                None => Ok(vec![svg]),
+            }
+        }
+        Command::KicadSchematic { file, output } => {
+            let evaluated = evaluate_file(&file)?;
+            let schematic = kicad::schematic(&evaluated.design()).map_err(CliError::Generation)?;
+            write_file(&output, &schematic)?;
+            Ok(vec![format!(
+                "wrote KiCad schematic to {}",
+                output.display()
+            )])
+        }
+        Command::KicadPcb { file, output } => {
+            let evaluated = evaluate_file(&file)?;
+            let pcb = kicad::pcb(&evaluated.design()).map_err(CliError::Generation)?;
+            write_file(&output, &pcb)?;
+            Ok(vec![format!("wrote KiCad PCB to {}", output.display())])
         }
         Command::Display { file, output_dir } => {
             let evaluated = evaluate_file(&file)?;
@@ -178,7 +228,16 @@ pub fn execute(cli: Cli) -> Result<Vec<String>, CliError> {
                 match display.result {
                     Ok(graph) => {
                         let path = output_dir.join(format!("{}.svg", slug(&display.name)));
-                        write_file(&path, &graph.svg)?;
+                        let traces = graph
+                            .traces
+                            .into_iter()
+                            .map(|trace| graph_render::TraceSeries {
+                                name: trace.name,
+                                samples: trace.samples,
+                            })
+                            .collect::<Vec<_>>();
+                        let svg = graph_render::render(&display.name, &traces);
+                        write_file(&path, &svg)?;
                         lines.push(format!("wrote {}", path.display()));
                     }
                     Err(error) => {
@@ -204,6 +263,7 @@ fn evaluate_file(path: &Path) -> Result<evaluator::EvaluationOutput, CliError> {
 fn display_value(value: &Value) -> String {
     match value {
         Value::Number(value) => value.to_string(),
+        Value::Quantity(value, unit) => format!("{value} {unit}"),
         Value::String(value) => format!("{value:?}"),
         Value::Boolean(value) => value.to_string(),
         Value::None => "none".into(),
@@ -321,107 +381,4 @@ fn relative_name(root: &Path, path: &Path) -> String {
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use super::*;
-
-    struct TempDirectory(PathBuf);
-
-    impl TempDirectory {
-        fn new() -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path =
-                std::env::temp_dir().join(format!("etch-cli-{}-{unique}", std::process::id()));
-            fs::create_dir_all(&path).unwrap();
-            Self(path)
-        }
-    }
-
-    impl Drop for TempDirectory {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn example(name: &str) -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../examples/stdlib")
-            .join(name)
-    }
-
-    #[test]
-    fn checks_and_runs_files_with_relative_imports() {
-        let directory = TempDirectory::new();
-        let main = directory.0.join("main.etch");
-        fs::write(&main, "from \"module.etch\" import { answer }; answer").unwrap();
-        fs::write(directory.0.join("module.etch"), "export let answer = 42").unwrap();
-
-        let checked = execute(Cli {
-            command: Command::Check { file: main.clone() },
-        })
-        .unwrap();
-        assert!(checked[0].starts_with("checked "));
-        let values = execute(Cli {
-            command: Command::Run { file: main },
-        })
-        .unwrap();
-        assert_eq!(values, ["[0] 42"]);
-    }
-
-    #[test]
-    fn runs_tests_and_numeric_simulations() {
-        let tests = execute(Cli {
-            command: Command::Test {
-                file: example("voltage_divider.etch"),
-            },
-        })
-        .unwrap();
-        assert!(tests.iter().any(|line| line.starts_with("PASS ")));
-
-        let simulation = execute(Cli {
-            command: Command::Simulate {
-                file: example("voltage_divider.etch"),
-                steps: 1,
-                delta_time: 0.001,
-            },
-        })
-        .unwrap();
-        assert!(simulation.iter().any(|line| line.starts_with("node ")));
-    }
-
-    #[test]
-    fn writes_schematic_and_display_svgs() {
-        let directory = TempDirectory::new();
-        let schematic = directory.0.join("schematic.svg");
-        execute(Cli {
-            command: Command::Schematic {
-                file: example("sectioned_system.etch"),
-                output: Some(schematic.clone()),
-            },
-        })
-        .unwrap();
-        assert!(fs::read_to_string(schematic).unwrap().starts_with("<svg"));
-
-        let displays = directory.0.join("graphs");
-        execute(Cli {
-            command: Command::Display {
-                file: example("rc_response.etch"),
-                output_dir: displays.clone(),
-            },
-        })
-        .unwrap();
-        let graph = displays.join("rc-transient-response.svg");
-        assert!(
-            fs::read_to_string(graph)
-                .unwrap()
-                .contains("class=\"trace\"")
-        );
-    }
 }
