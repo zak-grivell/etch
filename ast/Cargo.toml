@@ -6,4 +6,4 @@ edition = "2024"
 [dependencies]
 ast_macros = { path = "../ast_macros" }
 chumsky = "0.13.0"
-derive_more = { version = "2.1.1", features = ["from", "into"] }
+derive_more = { version = "2.1.1", features = ["from"] }
