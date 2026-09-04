@@ -9,7 +9,9 @@ The compiler and output backends communicate through the renderer-independent
 - `highlighting` provides tolerant, editor-independent syntax highlighting.
 - `etch_lsp` serves compiler diagnostics and semantic highlighting over LSP.
 - `evaluator` evaluates the AST, simulates behavior, and produces `CircuitDesign`.
-- `schematic`, `pcb`, `kicad`, and `graph_render` are independent output crates.
+- `schematic` owns logical placement and SVG rendering; `pcb` owns physical
+  placement/routing and SVG rendering. `kicad` serializes those same resolved
+  layouts into editable KiCad files, and `graph_render` handles plots.
 - `cli` is the composition layer that selects an output crate.
 
 Output crates do not depend on the evaluator, and the evaluator does not depend
@@ -60,10 +62,10 @@ cargo run -p cli -- check examples/voltage_divider.etch
 cargo run -p cli -- run examples/voltage_divider.etch
 cargo run -p cli -- simulate examples/voltage_divider.etch --steps 10 --delta-time 0.001
 cargo run -p cli -- test examples/voltage_divider.etch
-cargo run -p cli -- schematic examples/sectioned_system.etch --output schematic.svg
-cargo run -p cli -- pcb examples/pcb_voltage_divider.etch --output pcb.svg
-cargo run -p cli -- kicad-schematic examples/pcb_voltage_divider.etch --output board.kicad_sch
-cargo run -p cli -- kicad-pcb examples/pcb_voltage_divider.etch --output board.kicad_pcb
+cargo run -p cli -- export schematic examples/sectioned_system.etch --format svg --output schematic.svg
+cargo run -p cli -- export schematic examples/pcb_voltage_divider.etch --format kicad --output board.kicad_sch
+cargo run -p cli -- export pcb examples/pcb_voltage_divider.etch --format svg --output pcb.svg
+cargo run -p cli -- export pcb examples/pcb_voltage_divider.etch --format kicad --output board.kicad_pcb
 cargo run -p cli -- display examples/rc_response.etch --output-dir displays
 ```
 
@@ -118,6 +120,10 @@ schematic-only item such as a power symbol uses an empty footprint string.
 The installed binary is named `etch`, so the equivalent installed commands use
 `etch check`, `etch test`, and so on. Imports are resolved relative to the main
 file's directory; bundled `std/*.txt` imports are always available.
+
+Both formats consume the same resolved layout: `export schematic` shares
+component placement between SVG and KiCad, while `export pcb` shares component,
+pad, net, and trace geometry between SVG and KiCad.
 
 Select the circuit component intended for rendering explicitly:
 

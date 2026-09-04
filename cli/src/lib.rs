@@ -3,7 +3,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use evaluator::{RunError, SourceProvider, Value, evaluate};
 
 #[cfg(test)]
@@ -32,7 +32,13 @@ pub enum Command {
     },
     /// Run all language tests registered by a program.
     Test { file: PathBuf },
+    /// Export a schematic or PCB using the shared layout for the selected format.
+    Export {
+        #[command(subcommand)]
+        target: ExportTarget,
+    },
     /// Generate an SVG schematic.
+    #[command(hide = true)]
     Schematic {
         file: PathBuf,
         /// Write to this path; omit it to print SVG to stdout.
@@ -40,6 +46,7 @@ pub enum Command {
         output: Option<PathBuf>,
     },
     /// Auto-place and autoroute a PCB, then generate an SVG preview.
+    #[command(hide = true)]
     Pcb {
         file: PathBuf,
         /// Write to this path; omit it to print SVG to stdout.
@@ -47,12 +54,14 @@ pub enum Command {
         output: Option<PathBuf>,
     },
     /// Export an editable KiCad schematic (.kicad_sch).
+    #[command(hide = true)]
     KicadSchematic {
         file: PathBuf,
         #[arg(short, long)]
         output: PathBuf,
     },
     /// Export an editable KiCad PCB (.kicad_pcb).
+    #[command(hide = true)]
     KicadPcb {
         file: PathBuf,
         #[arg(short, long)]
@@ -64,6 +73,32 @@ pub enum Command {
         #[arg(short, long, default_value = "displays")]
         output_dir: PathBuf,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ExportTarget {
+    /// Export the logical schematic.
+    Schematic {
+        file: PathBuf,
+        #[arg(long, value_enum)]
+        format: ExportFormat,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+    /// Export the physical PCB.
+    Pcb {
+        file: PathBuf,
+        #[arg(long, value_enum)]
+        format: ExportFormat,
+        #[arg(short, long)]
+        output: PathBuf,
+    },
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ExportFormat {
+    Svg,
+    Kicad,
 }
 
 #[derive(Debug)]
@@ -178,6 +213,18 @@ pub fn execute(cli: Cli) -> Result<Vec<String>, CliError> {
                 Err(CliError::TestsFailed(lines))
             }
         }
+        Command::Export { target } => match target {
+            ExportTarget::Schematic {
+                file,
+                format,
+                output,
+            } => export_schematic(&file, format, &output),
+            ExportTarget::Pcb {
+                file,
+                format,
+                output,
+            } => export_pcb(&file, format, &output),
+        },
         Command::Schematic { file, output } => {
             let evaluated = evaluate_file(&file)?;
             let svg = schematic::render(&evaluated.design());
@@ -255,6 +302,40 @@ pub fn execute(cli: Cli) -> Result<Vec<String>, CliError> {
             }
         }
     }
+}
+
+fn export_schematic(
+    file: &Path,
+    format: ExportFormat,
+    output: &Path,
+) -> Result<Vec<String>, CliError> {
+    match format {
+        ExportFormat::Svg => validate_output_extension(output, "svg", "SVG schematic")?,
+        ExportFormat::Kicad => validate_output_extension(output, "kicad_sch", "KiCad schematic")?,
+    }
+    let evaluated = evaluate_file(file)?;
+    let contents = match format {
+        ExportFormat::Svg => schematic::render(&evaluated.design()),
+        ExportFormat::Kicad => {
+            kicad::schematic(&evaluated.design()).map_err(CliError::Generation)?
+        }
+    };
+    write_file(output, &contents)?;
+    Ok(vec![format!("wrote schematic to {}", output.display())])
+}
+
+fn export_pcb(file: &Path, format: ExportFormat, output: &Path) -> Result<Vec<String>, CliError> {
+    match format {
+        ExportFormat::Svg => validate_output_extension(output, "svg", "SVG PCB")?,
+        ExportFormat::Kicad => validate_output_extension(output, "kicad_pcb", "KiCad PCB")?,
+    }
+    let evaluated = evaluate_file(file)?;
+    let contents = match format {
+        ExportFormat::Svg => pcb::render(&evaluated.design()).map_err(CliError::Generation)?,
+        ExportFormat::Kicad => kicad::pcb(&evaluated.design()).map_err(CliError::Generation)?,
+    };
+    write_file(output, &contents)?;
+    Ok(vec![format!("wrote PCB to {}", output.display())])
 }
 
 fn evaluate_file(path: &Path) -> Result<evaluator::EvaluationOutput, CliError> {

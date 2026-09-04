@@ -11,7 +11,6 @@ pub(crate) struct Pin {
 pub(crate) struct LibrarySymbol {
     pub(crate) definition: String,
     pub(crate) pins: BTreeMap<String, Pin>,
-    pub(crate) height: f64,
 }
 
 pub(crate) fn load(library_id: &str) -> Result<Option<LibrarySymbol>, String> {
@@ -43,16 +42,7 @@ pub(crate) fn load(library_id: &str) -> Result<Option<LibrarySymbol>, String> {
     if pins.is_empty() {
         return Err(format!("KiCad symbol `{library_id}` has no pins"));
     }
-    let min_y = pins.values().map(|pin| pin.y).fold(f64::INFINITY, f64::min);
-    let max_y = pins
-        .values()
-        .map(|pin| pin.y)
-        .fold(f64::NEG_INFINITY, f64::max);
-    Ok(Some(LibrarySymbol {
-        definition,
-        pins,
-        height: (max_y - min_y).abs() + 10.16,
-    }))
+    Ok(Some(LibrarySymbol { definition, pins }))
 }
 
 fn symbol_directories() -> Vec<PathBuf> {

@@ -13,10 +13,10 @@ The design is split into named schematic sections, while labelled nets join the 
 
 ```sh
 cargo run -p cli -- check examples/flight_computer/main.etch
-cargo run -p cli -- schematic examples/flight_computer/main.etch --output flight_computer.svg
-cargo run -p cli -- pcb examples/flight_computer/main.etch --output flight_computer_pcb.svg
-cargo run -p cli -- kicad-schematic examples/flight_computer/main.etch --output flight_computer.kicad_sch
-cargo run -p cli -- kicad-pcb examples/flight_computer/main.etch --output flight_computer.kicad_pcb
+cargo run -p cli -- export schematic examples/flight_computer/main.etch --format svg --output flight_computer.svg
+cargo run -p cli -- export schematic examples/flight_computer/main.etch --format kicad --output flight_computer.kicad_sch
+cargo run -p cli -- export pcb examples/flight_computer/main.etch --format svg --output flight_computer_pcb.svg
+cargo run -p cli -- export pcb examples/flight_computer/main.etch --format kicad --output flight_computer.kicad_pcb
 ```
 
 This is a substantial reference design, not a production-ready avionics design. Review RF matching, antenna layout, ESD/surge protection, regulator thermal limits, sensor placement, grounding, connector pinout, and environmental requirements before hardware manufacture.

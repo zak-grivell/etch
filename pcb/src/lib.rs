@@ -5,17 +5,29 @@ use circuit_ir::{CircuitDesign, Component, PcbConfig};
 use render_utils::escape_xml;
 
 #[derive(Clone, Copy)]
-struct Point {
-    x: f64,
-    y: f64,
+pub struct Point {
+    pub x: f64,
+    pub y: f64,
 }
 
-struct Placed<'a> {
-    component: &'a Component,
-    center: Point,
-    width: f64,
-    height: f64,
-    pads: BTreeMap<u64, Point>,
+pub struct PlacedComponent {
+    pub component_index: usize,
+    pub center: Point,
+    pub width: f64,
+    pub height: f64,
+    pub pads: BTreeMap<u64, Point>,
+}
+
+pub struct PcbLayout {
+    pub components: Vec<PlacedComponent>,
+    pub nets: BTreeMap<u64, Vec<Point>>,
+    pub traces: Vec<TraceSegment>,
+}
+
+pub struct TraceSegment {
+    pub root: u64,
+    pub layer: usize,
+    pub points: [Point; 3],
 }
 
 /// Produce a deliberately small, deterministic first PCB implementation.
@@ -29,30 +41,73 @@ pub fn render(circuit: &CircuitDesign) -> Result<String, String> {
         .pcb
         .as_ref()
         .ok_or_else(|| "PCB generation requires pcb_config(...)".to_owned())?;
+    let layout = layout(circuit)?;
+    Ok(draw(circuit, config, &layout))
+}
+
+pub fn layout(circuit: &CircuitDesign) -> Result<PcbLayout, String> {
+    let config = circuit
+        .pcb
+        .as_ref()
+        .ok_or_else(|| "PCB generation requires pcb_config(...)".to_owned())?;
     let roots = circuit.electrical_roots();
     let components = circuit
         .components
         .iter()
-        .filter(|component| !matches!(component.kind.as_str(), "ground" | "supply"))
+        .enumerate()
+        .filter(|(_, component)| !matches!(component.kind.as_str(), "ground" | "supply"))
         .collect::<Vec<_>>();
     if components.is_empty() {
         return Err("PCB generation requires at least one component symbol".into());
     }
     let placed = place_components(&components, config)?;
     let nets = collect_nets(&placed, &roots);
-    Ok(draw(circuit, config, &placed, &nets))
+    let traces = route_nets(&nets, config);
+    Ok(PcbLayout {
+        components: placed,
+        nets,
+        traces,
+    })
 }
 
-fn place_components<'a>(
-    components: &[&'a Component],
+fn route_nets(nets: &BTreeMap<u64, Vec<Point>>, config: &PcbConfig) -> Vec<TraceSegment> {
+    let mut traces = Vec::new();
+    for (net_index, (root, points)) in nets.iter().enumerate() {
+        let layer_offset = (net_index % config.layers) as f64 * config.clearance;
+        let mut previous = points[0];
+        for target in points.iter().copied().skip(1) {
+            let bend = if net_index % 2 == 0 {
+                Point {
+                    x: target.x,
+                    y: previous.y + layer_offset,
+                }
+            } else {
+                Point {
+                    x: previous.x + layer_offset,
+                    y: target.y,
+                }
+            };
+            traces.push(TraceSegment {
+                root: *root,
+                layer: net_index % config.layers,
+                points: [previous, bend, target],
+            });
+            previous = target;
+        }
+    }
+    traces
+}
+
+fn place_components(
+    components: &[(usize, &Component)],
     config: &PcbConfig,
-) -> Result<Vec<Placed<'a>>, String> {
+) -> Result<Vec<PlacedComponent>, String> {
     const BODY_WIDTH: f64 = 5.0;
     const PAD_PITCH: f64 = 1.6;
     let margin = 3.0;
     let columns = ((config.width - margin * 2.0) / 9.0).floor().max(1.0) as usize;
     let mut placed = Vec::with_capacity(components.len());
-    for (index, component) in components.iter().enumerate() {
+    for (index, (component_index, component)) in components.iter().enumerate() {
         let port_count = component.ports.len().max(1);
         let height = (port_count.div_ceil(2) as f64 * PAD_PITCH + 1.8).max(4.0);
         let column = index % columns;
@@ -93,8 +148,8 @@ fn place_components<'a>(
                 },
             );
         }
-        placed.push(Placed {
-            component,
+        placed.push(PlacedComponent {
+            component_index: *component_index,
             center,
             width: BODY_WIDTH,
             height,
@@ -104,7 +159,10 @@ fn place_components<'a>(
     Ok(placed)
 }
 
-fn collect_nets(placed: &[Placed<'_>], roots: &BTreeMap<u64, u64>) -> BTreeMap<u64, Vec<Point>> {
+fn collect_nets(
+    placed: &[PlacedComponent],
+    roots: &BTreeMap<u64, u64>,
+) -> BTreeMap<u64, Vec<Point>> {
     let mut nets = BTreeMap::<u64, Vec<Point>>::new();
     for item in placed {
         for (node, point) in &item.pads {
@@ -117,12 +175,7 @@ fn collect_nets(placed: &[Placed<'_>], roots: &BTreeMap<u64, u64>) -> BTreeMap<u
     nets
 }
 
-fn draw(
-    circuit: &CircuitDesign,
-    config: &PcbConfig,
-    placed: &[Placed<'_>],
-    nets: &BTreeMap<u64, Vec<Point>>,
-) -> String {
+fn draw(circuit: &CircuitDesign, config: &PcbConfig, layout: &PcbLayout) -> String {
     const SCALE: f64 = 18.0;
     const BORDER: f64 = 24.0;
     let width = config.width * SCALE + BORDER * 2.0;
@@ -147,45 +200,25 @@ fn draw(
     .unwrap();
 
     let colors = ["#fbbf24", "#38bdf8", "#fb7185", "#c084fc"];
-    for (net_index, points) in nets.values().enumerate() {
-        let color = colors[net_index % config.layers.min(colors.len()).max(1)];
-        let layer_offset = (net_index % config.layers) as f64 * config.clearance;
-        let mut previous = points[0];
-        for target in points.iter().copied().skip(1) {
-            // Manhattan routing is the baseline used by tscircuit's simple
-            // custom-router example. Alternating bend direction and layers
-            // makes this useful while leaving room for a maze router later.
-            let bend = if net_index % 2 == 0 {
-                Point {
-                    x: target.x,
-                    y: previous.y + layer_offset,
-                }
-            } else {
-                Point {
-                    x: previous.x + layer_offset,
-                    y: target.y,
-                }
-            };
-            let a = map(previous);
-            let b = map(bend);
-            let c = map(target);
-            writeln!(
-                svg,
-                r#"<path d="M {} {} L {} {} L {} {}" fill="none" stroke="{color}" stroke-width="{}" stroke-linejoin="round" opacity="0.9"/>"#,
-                a.x,
-                a.y,
-                b.x,
-                b.y,
-                c.x,
-                c.y,
-                (config.min_trace_width * SCALE).max(1.5)
-            )
-            .unwrap();
-            previous = target;
-        }
+    for trace in &layout.traces {
+        let color = colors[trace.layer % colors.len()];
+        let [a, b, c] = trace.points.map(map);
+        writeln!(
+            svg,
+            r#"<path d="M {} {} L {} {} L {} {}" fill="none" stroke="{color}" stroke-width="{}" stroke-linejoin="round" opacity="0.9"/>"#,
+            a.x,
+            a.y,
+            b.x,
+            b.y,
+            c.x,
+            c.y,
+            (config.min_trace_width * SCALE).max(1.5)
+        )
+        .unwrap();
     }
 
-    for (index, item) in placed.iter().enumerate() {
+    for (index, item) in layout.components.iter().enumerate() {
+        let component = &circuit.components[item.component_index];
         let center = map(item.center);
         writeln!(
             svg,
@@ -205,11 +238,10 @@ fn draw(
             )
             .unwrap();
         }
-        let label = item
-            .component
+        let label = component
             .label
             .as_deref()
-            .unwrap_or(item.component.kind.as_str());
+            .unwrap_or(component.kind.as_str());
         writeln!(
             svg,
             r#"<text x="{}" y="{}" fill="white" font-family="monospace" font-size="11" text-anchor="middle">{}</text>"#,
@@ -226,7 +258,7 @@ fn draw(
         config.width,
         config.height,
         config.layers,
-        nets.len()
+        layout.nets.len()
     )
     .unwrap();
     let _ = circuit;

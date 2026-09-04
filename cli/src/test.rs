@@ -73,9 +73,12 @@ fn writes_schematic_pcb_and_display_svgs() {
     let directory = TempDirectory::new();
     let schematic = directory.0.join("schematic.svg");
     execute(Cli {
-        command: Command::Schematic {
-            file: example("sectioned_system.etch"),
-            output: Some(schematic.clone()),
+        command: Command::Export {
+            target: ExportTarget::Schematic {
+                file: example("sectioned_system.etch"),
+                format: ExportFormat::Svg,
+                output: schematic.clone(),
+            },
         },
     })
     .unwrap();
@@ -83,9 +86,12 @@ fn writes_schematic_pcb_and_display_svgs() {
 
     let pcb = directory.0.join("pcb.svg");
     execute(Cli {
-        command: Command::Pcb {
-            file: example("pcb_voltage_divider.etch"),
-            output: Some(pcb.clone()),
+        command: Command::Export {
+            target: ExportTarget::Pcb {
+                file: example("pcb_voltage_divider.etch"),
+                format: ExportFormat::Svg,
+                output: pcb.clone(),
+            },
         },
     })
     .unwrap();
@@ -96,9 +102,12 @@ fn writes_schematic_pcb_and_display_svgs() {
 
     let kicad_schematic = directory.0.join("board.kicad_sch");
     execute(Cli {
-        command: Command::KicadSchematic {
-            file: example("pcb_voltage_divider.etch"),
-            output: kicad_schematic.clone(),
+        command: Command::Export {
+            target: ExportTarget::Schematic {
+                file: example("pcb_voltage_divider.etch"),
+                format: ExportFormat::Kicad,
+                output: kicad_schematic.clone(),
+            },
         },
     })
     .unwrap();
@@ -110,9 +119,12 @@ fn writes_schematic_pcb_and_display_svgs() {
 
     let kicad_pcb = directory.0.join("board.kicad_pcb");
     execute(Cli {
-        command: Command::KicadPcb {
-            file: example("pcb_voltage_divider.etch"),
-            output: kicad_pcb.clone(),
+        command: Command::Export {
+            target: ExportTarget::Pcb {
+                file: example("pcb_voltage_divider.etch"),
+                format: ExportFormat::Kicad,
+                output: kicad_pcb.clone(),
+            },
         },
     })
     .unwrap();

@@ -58,7 +58,53 @@ const ANCHOR_COLUMN_PITCH: f64 = 220.0;
 const WATERFALL_PITCH: f64 = SYMBOL_WIDTH + WIRE_LENGTH;
 const ANCHOR_ROW_PITCH: f64 = SYMBOL_HEIGHT + WIRE_LENGTH;
 
-pub fn render(circuit: &CircuitDesign) -> String {
+/// Renderer-independent component placement produced by Etch's schematic
+/// topology engine. Coordinates are SVG user units; exporters can apply a
+/// single uniform scale without changing relative placement.
+pub struct SchematicLayout {
+    pub components: Vec<ComponentPlacement>,
+    pub width: f64,
+    pub height: f64,
+}
+
+pub struct ComponentPlacement {
+    pub x: f64,
+    pub y: f64,
+}
+
+struct PreparedLayout<'a> {
+    sections: Vec<String>,
+    roots: BTreeMap<u64, u64>,
+    placed: Vec<Placed<'a>>,
+    width: f64,
+    height: f64,
+}
+
+pub fn layout(circuit: &CircuitDesign) -> SchematicLayout {
+    let prepared = prepare_layout(circuit);
+    let components = circuit
+        .components
+        .iter()
+        .map(|component| {
+            let placed = prepared
+                .placed
+                .iter()
+                .find(|placed| std::ptr::eq(placed.component, component))
+                .expect("every circuit component must be placed");
+            ComponentPlacement {
+                x: placed.center.x,
+                y: placed.center.y,
+            }
+        })
+        .collect();
+    SchematicLayout {
+        components,
+        width: prepared.width,
+        height: prepared.height,
+    }
+}
+
+fn prepare_layout(circuit: &CircuitDesign) -> PreparedLayout<'_> {
     let sections = section_names(circuit);
     let roots = circuit.electrical_roots();
     let mut placed: Vec<Placed<'_>> = Vec::new();
@@ -202,6 +248,23 @@ pub fn render(circuit: &CircuitDesign) -> String {
         .reduce(f64::max)
         .unwrap_or(y_offset)
         .max(220.0);
+    PreparedLayout {
+        sections,
+        roots,
+        placed,
+        width,
+        height,
+    }
+}
+
+pub fn render(circuit: &CircuitDesign) -> String {
+    let PreparedLayout {
+        sections,
+        roots,
+        placed,
+        width,
+        height,
+    } = prepare_layout(circuit);
     let mut svg = String::new();
     writeln!(
         svg,

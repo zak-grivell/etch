@@ -8,6 +8,7 @@ use crate::symbol_library::{self, LibrarySymbol, Pin};
 
 pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
     ensure_links(circuit)?;
+    let layout = schematic::layout(circuit);
     let roots = circuit.electrical_roots();
     let names = circuit.net_names();
     let root_uuid = uuid(0, 0);
@@ -70,16 +71,13 @@ pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
     out.push_str("  )\n");
     let mut references = BTreeMap::<String, usize>::new();
     let mut net_points = BTreeMap::<u64, Vec<Point>>::new();
-    let columns = 7;
-    let row_heights = circuit
-        .components
-        .chunks(columns)
-        .map(|row| {
-            row.iter()
-                .map(|component| loaded_symbols[&component.kicad.as_ref().unwrap().symbol].height)
-                .fold(0.0, f64::max)
-        })
-        .collect::<Vec<_>>();
+    const PAGE_MARGIN_MM: f64 = 20.0;
+    const A1_WIDTH_MM: f64 = 841.0;
+    const A1_HEIGHT_MM: f64 = 594.0;
+    const DEFAULT_SVG_UNITS_PER_MM: f64 = 4.0;
+    let units_per_mm = DEFAULT_SVG_UNITS_PER_MM
+        .max(layout.width / (A1_WIDTH_MM - PAGE_MARGIN_MM * 2.0))
+        .max(layout.height / (A1_HEIGHT_MM - PAGE_MARGIN_MM * 2.0));
     for (index, component) in circuit.components.iter().enumerate() {
         let link = component.kicad.as_ref().unwrap();
         let loaded = &loaded_symbols[&link.symbol];
@@ -87,14 +85,8 @@ pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
         let number = references.entry(prefix.clone()).or_default();
         *number += 1;
         let reference = format!("{prefix}{number}");
-        let row = index / columns;
-        let x = 45.0 + (index % columns) as f64 * 115.0;
-        let y = 25.0
-            + row_heights[..row]
-                .iter()
-                .map(|height| height + 15.0)
-                .sum::<f64>()
-            + row_heights[row] / 2.0;
+        let x = PAGE_MARGIN_MM + layout.components[index].x / units_per_mm;
+        let y = PAGE_MARGIN_MM + layout.components[index].y / units_per_mm;
         let value = component.value.as_deref().unwrap_or(&component.kind);
         writeln!(out, "  (symbol (lib_id \"{}\") (at {x} {y} 0) (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no) (uuid \"{}\")", esc(&link.symbol), uuid(index + 1, 0)).unwrap();
         instance_property(&mut out, "Reference", &reference, x, y - 5.0, false);
@@ -166,7 +158,6 @@ fn generic_symbol(link: &circuit_ir::KicadLink) -> LibrarySymbol {
     LibrarySymbol {
         definition: String::new(),
         pins,
-        height: (link.pins.len().saturating_sub(1) as f64 * 2.54) + 10.16,
     }
 }
 

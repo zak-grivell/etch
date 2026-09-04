@@ -5,4 +5,5 @@ edition = "2024"
 
 [dependencies]
 circuit_ir = { path = "../circuit_ir" }
-
+pcb = { path = "../pcb" }
+schematic = { path = "../schematic" }

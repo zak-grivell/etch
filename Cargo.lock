@@ -564,6 +564,8 @@ name = "kicad"
 version = "0.1.0"
 dependencies = [
  "circuit_ir",
+ "pcb",
+ "schematic",
 ]
 
 [[package]]
