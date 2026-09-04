@@ -1,5 +1,5 @@
-from "std/sources.txt" import { VoltageSource };
-from "std/analog.txt" import { OpAmp };
+from "std/sources.etch" import { VoltageSource };
+from "std/analog.etch" import { OpAmp };
 
 let positive_input = VoltageSource(value: 0.01);
 let negative_input = VoltageSource(value: 0);

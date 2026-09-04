@@ -239,10 +239,10 @@ fn imports_only_explicitly_exported_values() {
 #[test]
 fn loads_bundled_standard_library_components() {
     let source = r#"
-        from "std/sources.txt" import { VoltageSource, Ground };
-        from "std/passive.txt" import { Resistor };
-        from "std/analog.txt" import { OpAmp, Led };
-        from "std/digital.txt" import { NotGate, DFlipFlop };
+        from "std/sources.etch" import { VoltageSource, Ground };
+        from "std/passive.etch" import { Resistor };
+        from "std/analog.etch" import { OpAmp, Led };
+        from "std/digital.etch" import { NotGate, DFlipFlop };
 
         let supply = VoltageSource(value: 5);
         let ground = Ground();

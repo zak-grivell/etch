@@ -1,5 +1,5 @@
-from "std/sources.txt" import { VoltageSource };
-from "std/passive.txt" import { Capacitor, Resistor };
+from "std/sources.etch" import { VoltageSource };
+from "std/passive.etch" import { Capacitor, Resistor };
 
 let supply = VoltageSource(value: 1);
 let coupling = Capacitor(capacitance: 0.000001);

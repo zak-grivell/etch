@@ -1,5 +1,5 @@
-from "std/sources.txt" import { VoltageSource };
-from "std/passive.txt" import { Resistor, Capacitor, Inductor };
+from "std/sources.etch" import { VoltageSource };
+from "std/passive.etch" import { Resistor, Capacitor, Inductor };
 from "components.etch" import {
     Stm32f407vet, Sx1278, Max3485, NeoM8n, Adxl343, Bmp280, Lis3mdl,
     Regulator33, Connector2, Connector3, Connector4,

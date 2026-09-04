@@ -1,5 +1,5 @@
-from "std/sources.txt" import { VoltageSource };
-from "std/passive.txt" import { Resistor };
+from "std/sources.etch" import { VoltageSource };
+from "std/passive.etch" import { Resistor };
 
 let supply = VoltageSource(value: 5);
 let upper = Resistor(resistance: 1000);

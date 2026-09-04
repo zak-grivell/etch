@@ -1,7 +1,7 @@
-from "std/sources.txt" import { VoltageSource };
-from "std/passive.txt" import { Resistor, Capacitor };
-from "std/analog.txt" import { OpAmp };
-from "std/digital.txt" import { AndGate, OrGate, DFlipFlop };
+from "std/sources.etch" import { VoltageSource };
+from "std/passive.etch" import { Resistor, Capacitor };
+from "std/analog.etch" import { OpAmp };
+from "std/digital.etch" import { AndGate, OrGate, DFlipFlop };
 
 // A deliberately dense circuit used to exercise anchor placement, waterfall
 // passives, shared rails, ground returns, fan-out, and anchor-to-anchor wiring.

@@ -66,10 +66,10 @@ fn load_file(
 
 fn standard_library_source(name: &str) -> Option<&'static str> {
     match name {
-        "std/sources.txt" => Some(include_str!("../std/sources.txt")),
-        "std/passive.txt" => Some(include_str!("../std/passive.txt")),
-        "std/analog.txt" => Some(include_str!("../std/analog.txt")),
-        "std/digital.txt" => Some(include_str!("../std/digital.txt")),
+        "std/sources.etch" => Some(include_str!("../std/sources.etch")),
+        "std/passive.etch" => Some(include_str!("../std/passive.etch")),
+        "std/analog.etch" => Some(include_str!("../std/analog.etch")),
+        "std/digital.etch" => Some(include_str!("../std/digital.etch")),
         _ => None,
     }
 }

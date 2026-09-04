@@ -21,8 +21,8 @@ lots of realy smart things have been developed in the software world like automa
 
 Example
 ```js
-from "std/sources.txt" import { VoltageSource };
-from "std/passive.txt" import { Resistor };
+from "std/sources.etch" import { VoltageSource };
+from "std/passive.etch" import { Resistor };
 
 let supply = VoltageSource(value: 5);
 let upper = Resistor(resistance: 1000);
@@ -119,7 +119,7 @@ schematic-only item such as a power symbol uses an empty footprint string.
 
 The installed binary is named `etch`, so the equivalent installed commands use
 `etch check`, `etch test`, and so on. Imports are resolved relative to the main
-file's directory; bundled `std/*.txt` imports are always available.
+file's directory; bundled `std/*.etch` imports are always available.
 
 Both formats consume the same resolved layout: `export schematic` shares
 component placement between SVG and KiCad, while `export pcb` shares component,

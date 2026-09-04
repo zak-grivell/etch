@@ -1,5 +1,5 @@
-from "std/sources.txt" import { VoltageSource };
-from "std/digital.txt" import { NotGate, AndGate };
+from "std/sources.etch" import { VoltageSource };
+from "std/digital.etch" import { NotGate, AndGate };
 
 let high = VoltageSource(value: 5);
 let low = VoltageSource(value: 0);

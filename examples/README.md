@@ -1,6 +1,6 @@
 # Standard-library examples
 
-These programs demonstrate the bundled `std/*.txt` components and double as
+These programs demonstrate the bundled `std/*.etch` components and double as
 executable regression tests. Each example registers one or more language tests
 with `test(name:, body:)`.
 
