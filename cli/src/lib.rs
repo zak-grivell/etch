@@ -201,6 +201,7 @@ pub fn execute(cli: Cli) -> Result<Vec<String>, CliError> {
             }
         }
         Command::KicadSchematic { file, output } => {
+            validate_output_extension(&output, "kicad_sch", "KiCad schematic")?;
             let evaluated = evaluate_file(&file)?;
             let schematic = kicad::schematic(&evaluated.design()).map_err(CliError::Generation)?;
             write_file(&output, &schematic)?;
@@ -210,6 +211,7 @@ pub fn execute(cli: Cli) -> Result<Vec<String>, CliError> {
             )])
         }
         Command::KicadPcb { file, output } => {
+            validate_output_extension(&output, "kicad_pcb", "KiCad PCB")?;
             let evaluated = evaluate_file(&file)?;
             let pcb = kicad::pcb(&evaluated.design()).map_err(CliError::Generation)?;
             write_file(&output, &pcb)?;
@@ -285,6 +287,21 @@ fn write_file(path: &Path, contents: &str) -> Result<(), CliError> {
         path: path.to_owned(),
         error,
     })
+}
+
+fn validate_output_extension(
+    path: &Path,
+    expected_extension: &str,
+    output_kind: &str,
+) -> Result<(), CliError> {
+    if path.extension().and_then(|extension| extension.to_str()) == Some(expected_extension) {
+        return Ok(());
+    }
+
+    Err(CliError::Generation(format!(
+        "{output_kind} output path must end in .{expected_extension}: {}",
+        path.display()
+    )))
 }
 
 fn slug(name: &str) -> String {

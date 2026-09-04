@@ -137,3 +137,42 @@ fn writes_schematic_pcb_and_display_svgs() {
             .contains("class=\"trace\"")
     );
 }
+
+#[test]
+fn rejects_incorrect_kicad_output_extensions_without_writing_files() {
+    let directory = TempDirectory::new();
+
+    let schematic = directory.0.join("board.sch");
+    let error = execute(Cli {
+        command: Command::KicadSchematic {
+            file: example("pcb_voltage_divider.etch"),
+            output: schematic.clone(),
+        },
+    })
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "KiCad schematic output path must end in .kicad_sch: {}",
+            schematic.display()
+        )
+    );
+    assert!(!schematic.exists());
+
+    let pcb = directory.0.join("board.sch");
+    let error = execute(Cli {
+        command: Command::KicadPcb {
+            file: example("pcb_voltage_divider.etch"),
+            output: pcb.clone(),
+        },
+    })
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "KiCad PCB output path must end in .kicad_pcb: {}",
+            pcb.display()
+        )
+    );
+    assert!(!pcb.exists());
+}
