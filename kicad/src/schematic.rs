@@ -4,6 +4,7 @@ use std::fmt::Write;
 use circuit_ir::{CircuitDesign, Component};
 
 use crate::common::*;
+use crate::symbol_library::{self, LibrarySymbol, Pin};
 
 pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
     ensure_links(circuit)?;
@@ -11,7 +12,7 @@ pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
     let names = circuit.net_names();
     let root_uuid = uuid(0, 0);
     let mut out = format!(
-        "(kicad_sch (version 20250114) (generator \"etch\") (generator_version \"0.1\")\n  (uuid \"{root_uuid}\")\n  (paper \"A4\")\n  (lib_symbols\n"
+        "(kicad_sch (version 20250114) (generator \"etch\") (generator_version \"0.1\")\n  (uuid \"{root_uuid}\")\n  (paper \"A1\")\n  (lib_symbols\n"
     );
     let mut libraries = BTreeMap::<String, (&Component, String)>::new();
     for component in &circuit.components {
@@ -26,8 +27,16 @@ pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
             (component, base)
         });
     }
+    let mut loaded_symbols = BTreeMap::new();
     for (library, (component, base)) in &libraries {
         let link = component.kicad.as_ref().unwrap();
+        if let Some(symbol) = symbol_library::load(library)? {
+            out.push_str("    ");
+            out.push_str(&symbol.definition.replace('\n', "\n    "));
+            out.push('\n');
+            loaded_symbols.insert(library.clone(), symbol);
+            continue;
+        }
         writeln!(out, "    (symbol \"{}\"", esc(library)).unwrap();
         out.push_str("      (pin_names (offset 1.016))\n      (exclude_from_sim no) (in_bom yes) (on_board yes)\n");
         property(
@@ -56,18 +65,36 @@ pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
             writeln!(out, "        (pin passive line (at -5.08 {y} 0) (length 2.54) (name \"{}\" (effects (font (size 1.27 1.27)))) (number \"{}\" (effects (font (size 1.27 1.27)))))", esc(port), esc(pin)).unwrap();
         }
         out.push_str("      )\n      (embedded_fonts no)\n    )\n");
+        loaded_symbols.insert(library.clone(), generic_symbol(link));
     }
     out.push_str("  )\n");
     let mut references = BTreeMap::<String, usize>::new();
     let mut net_points = BTreeMap::<u64, Vec<Point>>::new();
+    let columns = 7;
+    let row_heights = circuit
+        .components
+        .chunks(columns)
+        .map(|row| {
+            row.iter()
+                .map(|component| loaded_symbols[&component.kicad.as_ref().unwrap().symbol].height)
+                .fold(0.0, f64::max)
+        })
+        .collect::<Vec<_>>();
     for (index, component) in circuit.components.iter().enumerate() {
         let link = component.kicad.as_ref().unwrap();
+        let loaded = &loaded_symbols[&link.symbol];
         let prefix = reference_prefix(&link.symbol);
         let number = references.entry(prefix.clone()).or_default();
         *number += 1;
         let reference = format!("{prefix}{number}");
-        let x = 35.0 + (index % 5) as f64 * 35.0;
-        let y = 30.0 + (index / 5) as f64 * 25.0;
+        let row = index / columns;
+        let x = 45.0 + (index % columns) as f64 * 115.0;
+        let y = 25.0
+            + row_heights[..row]
+                .iter()
+                .map(|height| height + 15.0)
+                .sum::<f64>()
+            + row_heights[row] / 2.0;
         let value = component.value.as_deref().unwrap_or(&component.kind);
         writeln!(out, "  (symbol (lib_id \"{}\") (at {x} {y} 0) (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no) (uuid \"{}\")", esc(&link.symbol), uuid(index + 1, 0)).unwrap();
         instance_property(&mut out, "Reference", &reference, x, y - 5.0, false);
@@ -75,17 +102,26 @@ pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
         instance_property(&mut out, "Footprint", &link.footprint, x, y, true);
         instance_property(&mut out, "Datasheet", "~", x, y, true);
         instance_property(&mut out, "Description", "Etch linked component", x, y, true);
-        for (port_index, (port, node)) in component.ports.iter().enumerate() {
+        for (port, node) in &component.ports {
             let root = roots.get(node).copied().unwrap_or(*node);
+            let pin_number = &link.pins[port];
+            let pin = loaded.pins.get(pin_number).ok_or_else(|| {
+                format!(
+                    "KiCad symbol `{}` does not contain mapped pin `{pin_number}` for port `{port}`",
+                    link.symbol
+                )
+            })?;
             net_points.entry(root).or_default().push(Point {
-                x: x - 5.08,
-                y: y + pin_y(port_index, component.ports.len()),
+                x: x + pin.x,
+                y: y + pin.y,
             });
+        }
+        for (pin_index, pin_number) in loaded.pins.keys().enumerate() {
             writeln!(
                 out,
                 "    (pin \"{}\" (uuid \"{}\"))",
-                esc(&link.pins[port]),
-                uuid(index + 1, port_index + 1)
+                esc(pin_number),
+                uuid(index + 1, pin_index + 1)
             )
             .unwrap();
         }
@@ -110,6 +146,28 @@ pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
     }
     out.push_str("  (sheet_instances (path \"/\" (page \"1\")))\n  (embedded_fonts no)\n)\n");
     Ok(out)
+}
+
+fn generic_symbol(link: &circuit_ir::KicadLink) -> LibrarySymbol {
+    let pins = link
+        .pins
+        .iter()
+        .enumerate()
+        .map(|(index, (_, number))| {
+            (
+                number.clone(),
+                Pin {
+                    x: -5.08,
+                    y: pin_y(index, link.pins.len()),
+                },
+            )
+        })
+        .collect();
+    LibrarySymbol {
+        definition: String::new(),
+        pins,
+        height: (link.pins.len().saturating_sub(1) as f64 * 2.54) + 10.16,
+    }
 }
 
 fn property(out: &mut String, name: &str, value: &str, x: f64, y: f64, hide: bool) {
