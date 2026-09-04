@@ -20,7 +20,7 @@ on an output format or renderer.
 lots of realy smart things have been developed in the software world like automated testing, mocking and functions. What if we could apply these concepts to circuit design? this is the motivation behind etch.
 
 Example
-```js
+```etch
 from "std/sources.etch" import { VoltageSource };
 from "std/passive.etch" import { Resistor };
 
@@ -84,7 +84,7 @@ diagnostics, and full semantic tokens.
 
 PCB generation starts with a board-level configuration in the circuit source:
 
-```js
+```etch
 pcb_config(
     width: 30,
     height: 20,
@@ -101,7 +101,7 @@ across the configured copper layers.
 Components link to editable KiCad library parts through `use_symbol` metadata.
 This works for user-defined components as well as the bundled standard library:
 
-```js
+```etch
 use_symbol(
     kind: "resistor",
     ports: { a, b },
@@ -127,7 +127,7 @@ pad, net, and trace geometry between SVG and KiCad.
 
 Select the circuit component intended for rendering explicitly:
 
-```js
+```etch
 render(component: { input: upper.a, output: upper.b, ground })
 ```
 
