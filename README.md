@@ -19,30 +19,30 @@ on an output format or renderer.
 
 lots of realy smart things have been developed in the software world like automated testing, mocking and functions. What if we could apply these concepts to circuit design? this is the motivation behind etch.
 
-proposed DSL
+Example
 ```js
+from "std/sources.txt" import { VoltageSource };
+from "std/passive.txt" import { Resistor };
 
-module VoltageDivider (r_a: Number, r_b: Number) {
-  let { a: V_IN, b:V_MID } = Resistor(r_a)
-  let { b: V_OUT } = Resistor(r_b) { a: V_MID }
-  
-  return {
-    V_MID,
-    V_IN,
-    V_OUT
-  };
-}
+let supply = VoltageSource(value: 5);
+let upper = Resistor(resistance: 1000);
+let lower = Resistor(resistance: 1000);
 
-module XOR {
-  let { x, y, a  } = AND;
-  let { z: b} = OR { x, y };
-  let { z } = OR { a, b };
-  
-  return {
-    x, y, z
-  }
-}
+supply.positive <- upper.a;
+upper.b <- lower.a;
+lower.b <- ground;
 
+test(name: "equal resistors divide voltage in half", body: () -> {
+    simulate(steps: 1, delta_time: 0.001);
+
+    assert_close(
+        actual: voltage(node: upper.b),
+        expected: 2.5,
+        tolerance: 0.000001,
+    )
+});
+
+render(component: { input: upper.a, output: upper.b, ground: lower.b })
 ```
 
 
