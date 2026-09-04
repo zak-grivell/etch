@@ -1,0 +1,8 @@
+[package]
+name = "schematic"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+circuit_ir = { path = "../circuit_ir" }
+render_utils = { path = "../render_utils" }
