@@ -1,0 +1,13 @@
+[[language]]
+name = "etch"
+scope = "source.etch"
+file-types = ["etch"]
+grammar = "javascript"
+roots = ["Cargo.toml"]
+comment-token = "//"
+indent = { tab-width = 4, unit = "    " }
+language-servers = ["etch-lsp"]
+
+[language-server.etch-lsp]
+command = "cargo"
+args = ["run", "--quiet", "-p", "etch_lsp"]

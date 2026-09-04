@@ -1,5 +1,5 @@
 [package]
-name = "results"
+name = "highlighting"
 version = "0.1.0"
 edition = "2024"
 
