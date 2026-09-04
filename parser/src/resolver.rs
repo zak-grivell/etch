@@ -65,6 +65,9 @@ impl SymbolResolver {
             "section",
             "net",
             "display",
+            "pcb_config",
+            "ground",
+            "render",
         ];
         let builtins = builtin_names
             .into_iter()

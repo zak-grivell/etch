@@ -15,7 +15,7 @@ pub enum ValueType {
     Unknown,
     Never,
     Node,
-    Number,
+    Number(Option<String>),
     String,
     Boolean,
     None,
@@ -53,6 +53,7 @@ pub type TypedProgram = AstNode<Program<PartialMetadata>, PartialMetadata>;
 #[derive(Default)]
 pub struct TypeResolver {
     types: BTreeMap<Symbol, ValueType>,
+    aliases: BTreeMap<String, NumberType>,
 }
 
 impl TypeResolver {
@@ -119,7 +120,25 @@ impl TypeResolver {
 }
 
 fn compatible(a: &ValueType, b: &ValueType) -> bool {
-    a == b || *a == ValueType::Unknown || *b == ValueType::Unknown
+    a == b
+        || *a == ValueType::Unknown
+        || *b == ValueType::Unknown
+        || matches!(
+            (a, b),
+            (ValueType::Number(None), ValueType::Number(Some(_)))
+        )
+        || matches!(
+            (a, b),
+            (ValueType::Number(Some(_)), ValueType::Number(None))
+        )
+}
+
+fn number_type(value: &ValueType) -> Option<Option<String>> {
+    match value {
+        ValueType::Number(symbol) => Some(symbol.clone()),
+        ValueType::Unknown => Some(None),
+        _ => None,
+    }
 }
 fn unify(types: impl IntoIterator<Item = ValueType>) -> ValueType {
     let mut unique = Vec::new();
@@ -160,12 +179,17 @@ impl AstTransform for TypeResolver {
         &mut self,
         AstNode { inner, meta }: AstNode<TypeDefinition<Self::From>, Self::From>,
     ) -> Results<AstNode<TypeDefinition<Self::To>, Self::To>, Self::Error> {
-        self.transform_type(inner.rhs).map(|rhs| AstNode {
-            inner: TypeDefinition {
-                lhs: inner.lhs,
-                rhs,
-            },
-            meta: Self::meta(&meta, ValueType::None),
+        self.transform_type(inner.rhs).map(|rhs| {
+            if let (Some(name), Type::Number(number)) = (&inner.lhs, &rhs.inner) {
+                self.aliases.insert(name.name.clone(), number.clone());
+            }
+            AstNode {
+                inner: TypeDefinition {
+                    lhs: inner.lhs,
+                    rhs,
+                },
+                meta: Self::meta(&meta, ValueType::None),
+            }
         })
     }
     fn transform_return(
@@ -328,9 +352,7 @@ impl AstTransform for TypeResolver {
     ) -> Results<AstNode<UnaryOperation<Self::To>, Self::To>, Self::Error> {
         self.transform_expression(*inner.arg).flat_map(|arg| {
             let ty = match inner.op {
-                UnaryOperator::Negate if compatible(&ValueType::Number, &arg.meta.ty) => {
-                    ValueType::Number
-                }
+                UnaryOperator::Negate if number_type(&arg.meta.ty).is_some() => arg.meta.ty.clone(),
                 UnaryOperator::Flip if compatible(&ValueType::Boolean, &arg.meta.ty) => {
                     ValueType::Boolean
                 }
@@ -368,8 +390,9 @@ impl AstTransform for TypeResolver {
                     | BinaryOperator::GreaterThan
                     | BinaryOperator::LessThanOrEqual
                     | BinaryOperator::GreaterThanOrEqual
-                        if compatible(&ValueType::Number, &lhs.meta.ty)
-                            && compatible(&ValueType::Number, &rhs.meta.ty) =>
+                        if number_type(&lhs.meta.ty).is_some()
+                            && number_type(&rhs.meta.ty).is_some()
+                            && compatible(&lhs.meta.ty, &rhs.meta.ty) =>
                     {
                         ValueType::Boolean
                     }
@@ -377,10 +400,38 @@ impl AstTransform for TypeResolver {
                     | BinaryOperator::Sub
                     | BinaryOperator::Mul
                     | BinaryOperator::Div
-                        if compatible(&ValueType::Number, &lhs.meta.ty)
-                            && compatible(&ValueType::Number, &rhs.meta.ty) =>
+                        if number_type(&lhs.meta.ty).is_some()
+                            && number_type(&rhs.meta.ty).is_some() =>
                     {
-                        ValueType::Number
+                        match inner.op {
+                            BinaryOperator::Add | BinaryOperator::Sub => {
+                                if compatible(&lhs.meta.ty, &rhs.meta.ty) {
+                                    if lhs.meta.ty == ValueType::Number(None) {
+                                        rhs.meta.ty.clone()
+                                    } else {
+                                        lhs.meta.ty.clone()
+                                    }
+                                } else {
+                                    ValueType::Unknown
+                                }
+                            }
+                            BinaryOperator::Mul => match (&lhs.meta.ty, &rhs.meta.ty) {
+                                (ValueType::Number(Some(_)), ValueType::Number(None)) => {
+                                    lhs.meta.ty.clone()
+                                }
+                                (ValueType::Number(None), ValueType::Number(Some(_))) => {
+                                    rhs.meta.ty.clone()
+                                }
+                                _ => ValueType::Number(None),
+                            },
+                            BinaryOperator::Div => match (&lhs.meta.ty, &rhs.meta.ty) {
+                                (ValueType::Number(Some(_)), ValueType::Number(None)) => {
+                                    lhs.meta.ty.clone()
+                                }
+                                _ => ValueType::Number(None),
+                            },
+                            _ => unreachable!(),
+                        }
                     }
                     BinaryOperator::Wire
                         if compatible(&ValueType::Node, &lhs.meta.ty)
@@ -574,9 +625,23 @@ impl AstTransform for TypeResolver {
         &mut self,
         n: AstNode<NumberType, Self::From>,
     ) -> Results<AstNode<NumberType, Self::To>, Self::Error> {
+        let number = if let Some(alias) = n.inner.alias.clone() {
+            let Some(number) = self.aliases.get(&alias).cloned() else {
+                return Results::with_errors(
+                    AstNode {
+                        inner: n.inner,
+                        meta: Self::meta(&n.meta, ValueType::Unknown),
+                    },
+                    vec![Self::error(&n.meta, format!("unknown type `{alias}`"))],
+                );
+            };
+            number
+        } else {
+            n.inner
+        };
         Results::ok(AstNode {
-            inner: n.inner,
-            meta: Self::meta(&n.meta, ValueType::Number),
+            meta: Self::meta(&n.meta, ValueType::Number(number.symbol.clone())),
+            inner: number,
         })
     }
     fn transform_type_string(
@@ -752,7 +817,7 @@ impl AstTransform for TypeResolver {
     ) -> Results<AstNode<f64, Self::To>, Self::Error> {
         Results::ok(AstNode {
             inner: n.inner,
-            meta: Self::meta(&n.meta, ValueType::Number),
+            meta: Self::meta(&n.meta, ValueType::Number(None)),
         })
     }
     fn transform_block(
@@ -780,7 +845,7 @@ impl AstTransform for TypeResolver {
 fn type_value(ty: &Type<PartialMetadata>) -> ValueType {
     match ty {
         Type::Node(_) => ValueType::Node,
-        Type::Number(_) => ValueType::Number,
+        Type::Number(number) => ValueType::Number(number.symbol.clone()),
         Type::String(_) => ValueType::String,
         Type::Boolean(_) => ValueType::Boolean,
         Type::None(_) => ValueType::None,

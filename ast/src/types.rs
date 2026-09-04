@@ -43,7 +43,21 @@ pub struct NodeType;
 #[derive(Clone, Debug, PartialEq)]
 pub struct StringType;
 #[derive(Clone, Debug, PartialEq)]
-pub struct NumberType;
+pub struct NumberType {
+    /// Display symbol for a concrete numeric unit (for example `V` or `Ω`).
+    pub symbol: Option<String>,
+    /// Unresolved user-defined type name. Cleared by semantic resolution.
+    pub alias: Option<String>,
+}
+
+impl NumberType {
+    pub fn scalar() -> Self {
+        Self {
+            symbol: None,
+            alias: None,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq)]
 pub struct BooleanType;
 #[derive(Clone, Debug, PartialEq)]

@@ -1,7 +1,13 @@
-export let VoltageSource = (value: Number) -> {
+type Voltage = Number(symbol: "V");
+type Current = Number(symbol: "A");
+
+export let VoltageSource = (value: Voltage) -> {
     let positive = use_node();
     let negative = use_node();
-    use_symbol(kind: "voltage-source", ports: { positive, negative }, value: value);
+    negative <- ground;
+    use_symbol(kind: "voltage-source", ports: { positive, negative }, value: value, kicad: {
+        symbol: "Simulation_SPICE:VDC", footprint: "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical", pins: { positive: "1", negative: "2" },
+    });
     use_equation(equation: () -> {
         fix_voltage(node: negative, value: 0);
         fix_voltage(node: positive, value: value)
@@ -10,16 +16,15 @@ export let VoltageSource = (value: Number) -> {
 };
 
 export let Ground = () -> {
-    let node = use_node();
-    use_symbol(kind: "ground", ports: { node });
-    use_equation(equation: () -> fix_voltage(node: node, value: 0));
-    return { node };
+    return { node: ground };
 };
 
-export let CurrentSource = (value: Number) -> {
+export let CurrentSource = (value: Current) -> {
     let positive = use_node();
     let negative = use_node();
-    use_symbol(kind: "current-source", ports: { positive, negative }, value: value);
+    use_symbol(kind: "current-source", ports: { positive, negative }, value: value, kicad: {
+        symbol: "Simulation_SPICE:IDC", footprint: "Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical", pins: { positive: "1", negative: "2" },
+    });
     use_equation(equation: () -> current(
         between: [positive, negative],
         value: value,

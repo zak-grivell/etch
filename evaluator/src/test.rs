@@ -47,11 +47,130 @@ fn evaluates_bindings_objects_and_arrays() {
 }
 
 #[test]
+fn evaluates_pcb_and_kicad_metadata_into_the_design_ir() {
+    let source = r#"
+        pcb_config(
+            width: 30,
+            height: 20,
+            layers: 2,
+            min_trace_width: 0.25,
+            clearance: 0.2,
+        );
+        let Component = () -> {
+            let a = use_node();
+            let b = use_node();
+            use_symbol(kind: "resistor", ports: { a, b }, kicad: {
+                symbol: "Device:R",
+                footprint: "Resistor_SMD:R_0603_1608Metric",
+                pins: { a: "1", b: "2" },
+            });
+            return { a, b };
+        };
+        let first = Component();
+        let second = Component();
+        first.b <- second.a;
+    "#;
+    let output = evaluate(&Sources::single(source)).unwrap();
+    let design = output.design();
+    assert_eq!(design.pcb.as_ref().unwrap().width, 30.0);
+    assert_eq!(design.components.len(), 3);
+    assert_eq!(
+        design
+            .components
+            .iter()
+            .find(|component| component.kind == "resistor")
+            .unwrap()
+            .kicad
+            .as_ref()
+            .unwrap()
+            .symbol,
+        "Device:R"
+    );
+    assert_eq!(design.electrical_roots().len(), 5);
+}
+
+#[test]
 fn evaluates_lambdas_and_returns() {
     assert_eq!(
         run("let double = (x: Number) -> { return x * 2 }; double(x: 4)"),
         vec![Value::Number(8.0)]
     );
+}
+
+#[test]
+fn rejects_top_level_hooks() {
+    for source in [
+        "use_node()",
+        "use_state(initial: 0)",
+        "use_equation(equation: () -> 0)",
+        "hook(nodes: {}, simulate: () -> 0)",
+        "let create_node = use_node; create_node()",
+    ] {
+        assert!(matches!(
+            evaluate(&Sources::single(source)),
+            Err(RunError::Evaluation(error))
+                if error.message == "hooks can only be called inside a function"
+        ));
+    }
+}
+
+#[test]
+fn allows_hooks_scoped_to_function_calls() {
+    let output = evaluate(&Sources::single(
+        "let Component = () -> use_node(); [Component(), Component()]",
+    ))
+    .unwrap();
+
+    assert_eq!(output.circuit.node_count(), 3);
+}
+
+#[test]
+fn provides_one_shared_zero_volt_ground() {
+    let output = evaluate(&Sources::single(
+        "let GroundReference = () -> ground; [ground, GroundReference()]",
+    ))
+    .unwrap();
+    let Value::Array(nodes) = output.values.last().unwrap() else {
+        panic!("expected ground nodes")
+    };
+    assert_eq!(nodes[0], nodes[1]);
+    assert_eq!(
+        output
+            .design()
+            .components
+            .iter()
+            .filter(|component| component.kind == "ground")
+            .count(),
+        1
+    );
+
+    output.circuit.simulate(1, 0.001).unwrap();
+    let Value::Node(ground) = &nodes[0] else {
+        panic!("expected a ground node")
+    };
+    assert_eq!(output.circuit.voltage(ground), 0.0);
+}
+
+#[test]
+fn registers_an_explicit_component_to_render() {
+    let output = evaluate(&Sources::single(
+        "let Component = () -> { return { pin: use_node() } }; render(component: Component())",
+    ))
+    .unwrap();
+
+    assert!(output.values.is_empty());
+    assert!(matches!(
+        output.rendered_component(),
+        Some(Value::Object(component)) if matches!(component.get("pin"), Some(Value::Node(_)))
+    ));
+}
+
+#[test]
+fn does_not_treat_a_file_expression_as_a_render_root() {
+    let output = evaluate(&Sources::single("{ pin: ground }")).unwrap();
+
+    assert!(matches!(output.values.last(), Some(Value::Object(_))));
+    assert!(output.rendered_component().is_none());
 }
 
 #[test]
@@ -224,7 +343,7 @@ fn constructs_and_simulates_component_hooks() {
         panic!("circuit source did not compile");
     }
     let output = evaluate(&sources).unwrap();
-    assert_eq!(output.circuit.node_count(), 6);
+    assert_eq!(output.circuit.node_count(), 7);
     assert_eq!(output.circuit.hook_count(), 4);
     output.circuit.simulate(1, 0.001).unwrap();
 
@@ -501,27 +620,28 @@ fn standard_library_examples_are_executable_tests() {
     let examples = [
         (
             "voltage_divider.etch",
-            include_str!("../../examples/stdlib/voltage_divider.etch"),
+            include_str!("../../examples/voltage_divider.etch"),
         ),
         (
             "rc_response.etch",
-            include_str!("../../examples/stdlib/rc_response.etch"),
+            include_str!("../../examples/rc_response.etch"),
         ),
-        (
-            "op_amp.etch",
-            include_str!("../../examples/stdlib/op_amp.etch"),
-        ),
+        ("op_amp.etch", include_str!("../../examples/op_amp.etch")),
         (
             "logic_gates.etch",
-            include_str!("../../examples/stdlib/logic_gates.etch"),
+            include_str!("../../examples/logic_gates.etch"),
         ),
         (
             "d_flip_flop.etch",
-            include_str!("../../examples/stdlib/d_flip_flop.etch"),
+            include_str!("../../examples/d_flip_flop.etch"),
         ),
         (
             "sectioned_system.etch",
-            include_str!("../../examples/stdlib/sectioned_system.etch"),
+            include_str!("../../examples/sectioned_system.etch"),
+        ),
+        (
+            "complex_mixed_signal.etch",
+            include_str!("../../examples/complex_mixed_signal.etch"),
         ),
     ];
 
@@ -546,40 +666,8 @@ fn standard_library_examples_are_executable_tests() {
 }
 
 #[test]
-fn generates_sectioned_svg_schematics_and_custom_symbols() {
-    let source = include_str!("../../examples/stdlib/sectioned_system.etch");
-    let output = evaluate(&Sources::single(source)).unwrap();
-    let svg = output.circuit.schematic_svg();
-
-    assert!(svg.starts_with("<svg"));
-    assert!(svg.ends_with("</svg>\n"));
-    assert!(svg.contains("symbol-voltage-source"));
-    assert!(svg.contains("symbol-resistor"));
-    assert!(svg.contains("Power supply"));
-    assert!(svg.contains("Sensor divider"));
-    assert!(svg.contains(">VCC</text>"));
-    assert!(svg.contains(">GND</text>"));
-
-    let custom = r#"
-        let input = use_node();
-        let output = use_node();
-        use_symbol(
-            kind: "custom-sensor",
-            label: "U&amp;1",
-            ports: { input, output },
-            svg: "<circle cx='0' cy='0' r='20'/>",
-        );
-    "#;
-    let output = evaluate(&Sources::single(custom)).unwrap();
-    let svg = output.circuit.schematic_svg();
-    assert!(svg.contains("<symbol id=\"custom-0\""));
-    assert!(svg.contains("<circle cx='0' cy='0' r='20'/>"));
-    assert!(svg.contains("U&amp;amp;1"));
-}
-
-#[test]
-fn samples_and_renders_registered_displays() {
-    let source = include_str!("../../examples/stdlib/rc_response.etch");
+fn samples_registered_displays() {
+    let source = include_str!("../../examples/rc_response.etch");
     let output = evaluate(&Sources::single(source)).unwrap();
     assert_eq!(output.circuit.display_count(), 1);
     assert_eq!(output.circuit.time(), 0.0);
@@ -590,11 +678,6 @@ fn samples_and_renders_registered_displays() {
     let graph = displays[0].result.as_ref().unwrap();
     assert_eq!(graph.traces.len(), 2);
     assert!(graph.traces.iter().all(|trace| trace.samples.len() == 21));
-    assert!(graph.svg.starts_with("<svg"));
-    assert!(graph.svg.contains("RC transient response"));
-    assert!(graph.svg.contains("class=\"grid\""));
-    assert!(graph.svg.contains(">input</text>"));
-    assert!(graph.svg.contains(">output</text>"));
     assert_eq!(output.circuit.time(), 0.0);
 }
 

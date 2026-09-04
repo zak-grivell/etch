@@ -1,6 +1,5 @@
 mod ast;
 mod expression;
-mod operator;
 mod pattern;
 mod primative;
 mod program;

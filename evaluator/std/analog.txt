@@ -6,6 +6,7 @@ export let OpAmp = (gain: Number, low: Number, high: Number, output_conductance:
         kind: "op-amp",
         ports: { positive, negative, output },
         value: gain,
+        kicad: { symbol: "Amplifier_Operational:LM321", footprint: "Package_TO_SOT_SMD:SOT-23-5", pins: { positive: "1", negative: "3", output: "4" } },
     );
     use_equation(equation: () -> {
         let raw = gain * (voltage(node: positive) - voltage(node: negative));
@@ -26,7 +27,9 @@ export let OpAmp = (gain: Number, low: Number, high: Number, output_conductance:
 export let Comparator = (threshold: Number, low: Number, high: Number) -> {
     let input = use_node();
     let output = use_node();
-    use_symbol(kind: "comparator", ports: { input, output }, value: threshold);
+    use_symbol(kind: "comparator", ports: { input, output }, value: threshold, kicad: {
+        symbol: "Comparator:LM311", footprint: "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", pins: { input: "2", output: "7" },
+    });
     use_equation(equation: () -> {
         let level = match voltage(node: input) > threshold {
             true -> high,
@@ -40,7 +43,9 @@ export let Comparator = (threshold: Number, low: Number, high: Number) -> {
 export let Diode = (forward_voltage: Number, on_resistance: Number, off_resistance: Number) -> {
     let anode = use_node();
     let cathode = use_node();
-    use_symbol(kind: "diode", ports: { anode, cathode }, value: forward_voltage);
+    use_symbol(kind: "diode", ports: { anode, cathode }, value: forward_voltage, kicad: {
+        symbol: "Device:D", footprint: "Diode_SMD:D_0603_1608Metric", pins: { anode: "1", cathode: "2" },
+    });
     use_equation(equation: () -> {
         let resistance = match voltage(node: anode) - voltage(node: cathode) > forward_voltage {
             true -> on_resistance,
@@ -54,7 +59,9 @@ export let Diode = (forward_voltage: Number, on_resistance: Number, off_resistan
 export let Led = (forward_voltage: Number, on_resistance: Number, off_resistance: Number) -> {
     let anode = use_node();
     let cathode = use_node();
-    use_symbol(kind: "led", ports: { anode, cathode }, value: forward_voltage);
+    use_symbol(kind: "led", ports: { anode, cathode }, value: forward_voltage, kicad: {
+        symbol: "Device:LED", footprint: "LED_SMD:LED_0603_1608Metric", pins: { anode: "1", cathode: "2" },
+    });
     use_equation(equation: () -> {
         let resistance = match voltage(node: anode) - voltage(node: cathode) > forward_voltage {
             true -> on_resistance,

@@ -1,7 +1,13 @@
-export let Resistor = (resistance: Number) -> {
+type Resistance = Number(symbol: "Ω");
+type Capacitance = Number(symbol: "F");
+type Inductance = Number(symbol: "H");
+
+export let Resistor = (resistance: Resistance) -> {
     let a = use_node();
     let b = use_node();
-    use_symbol(kind: "resistor", ports: { a, b }, value: resistance);
+    use_symbol(kind: "resistor", ports: { a, b }, value: resistance, kicad: {
+        symbol: "Device:R", footprint: "Resistor_SMD:R_0603_1608Metric", pins: { a: "1", b: "2" },
+    });
     use_equation(equation: () -> conductance(
         between: [a, b],
         value: 1 / resistance,
@@ -9,10 +15,12 @@ export let Resistor = (resistance: Number) -> {
     return { a, b };
 };
 
-export let Capacitor = (capacitance: Number) -> {
+export let Capacitor = (capacitance: Capacitance) -> {
     let a = use_node();
     let b = use_node();
-    use_symbol(kind: "capacitor", ports: { a, b }, value: capacitance);
+    use_symbol(kind: "capacitor", ports: { a, b }, value: capacitance, kicad: {
+        symbol: "Device:C", footprint: "Capacitor_SMD:C_0603_1608Metric", pins: { a: "1", b: "2" },
+    });
     let previous_voltage = use_state(initial: 0);
     use_equation(equation: () -> {
         let across = voltage(node: a) - voltage(node: b);
@@ -27,10 +35,12 @@ export let Capacitor = (capacitance: Number) -> {
     return { a, b };
 };
 
-export let Inductor = (inductance: Number) -> {
+export let Inductor = (inductance: Inductance) -> {
     let a = use_node();
     let b = use_node();
-    use_symbol(kind: "inductor", ports: { a, b }, value: inductance);
+    use_symbol(kind: "inductor", ports: { a, b }, value: inductance, kicad: {
+        symbol: "Device:L", footprint: "Inductor_SMD:L_0603_1608Metric", pins: { a: "1", b: "2" },
+    });
     let stored_current = use_state(initial: 0);
     use_equation(equation: () -> {
         current(between: [a, b], value: stored_current.get());
@@ -44,10 +54,12 @@ export let Inductor = (inductance: Number) -> {
     return { a, b };
 };
 
-export let Switch = (closed: Bool, on_resistance: Number, off_resistance: Number) -> {
+export let Switch = (closed: Bool, on_resistance: Resistance, off_resistance: Resistance) -> {
     let a = use_node();
     let b = use_node();
-    use_symbol(kind: "switch", ports: { a, b });
+    use_symbol(kind: "switch", ports: { a, b }, kicad: {
+        symbol: "Switch:SW_SPST", footprint: "Button_Switch_SMD:SW_SPST_TL3301AN", pins: { a: "1", b: "2" },
+    });
     use_equation(equation: () -> {
         let resistance = match closed {
             true -> on_resistance,

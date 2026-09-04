@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ariadne = "0.6.0"
 ast = { path = "../ast" }
 parser = { path = "../parser" }
-chumsky = "0.13.0"
+circuit_ir = { path = "../circuit_ir" }

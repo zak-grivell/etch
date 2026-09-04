@@ -532,11 +532,28 @@ where
         |ty: Recursive<dyn Parser<'src, I, Parsed<Type<ParsedNode>>, Extra<'src>>>| {
             let base = choice((
                 just(Token::Identifier("Node")).to(Type::Node(ast::NodeType)),
-                just(Token::Identifier("Number")).to(Type::Number(ast::NumberType)),
+                just(Token::Identifier("Number"))
+                    .ignore_then(
+                        just(Token::Identifier("symbol"))
+                            .ignore_then(symbol!(Colon))
+                            .ignore_then(select! { Token::Str(value) => value.to_string() })
+                            .delimited_by(symbol!(OpenParenthesis), symbol!(ClosedParenthesis))
+                            .or_not(),
+                    )
+                    .map(|symbol| {
+                        Type::Number(ast::NumberType {
+                            symbol,
+                            alias: None,
+                        })
+                    }),
                 just(Token::Identifier("String")).to(Type::String(ast::StringType)),
                 just(Token::Identifier("Bool")).to(Type::Boolean(ast::BooleanType)),
                 just(Token::Identifier("None")).to(Type::None(ast::NoneType)),
                 just(Token::Identifier("Never")).to(Type::Never(ast::NeverType)),
+                select! { Token::Identifier(name) => Type::Number(ast::NumberType {
+                    symbol: None,
+                    alias: Some(name.to_string()),
+                }) },
             ))
             .spanned_node()
             .boxed();

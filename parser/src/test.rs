@@ -13,7 +13,7 @@ fn parses_example_program() {
 
 #[test]
 fn parses_the_example_program() {
-    let input = read_to_string("../examples/main.etch").unwrap();
+    let input = read_to_string("../examples/voltage_divider.etch").unwrap();
 
     assert!(compile(&input).is_ok());
 }
@@ -43,6 +43,28 @@ fn parses_all_supported_type_forms() {
     let input = "type Callback = (value: Number) -> String; type Value = Number? | String; type Item = { value: Number }";
 
     assert!(compile(input).is_ok());
+}
+
+#[test]
+fn checks_user_defined_numeric_units() {
+    let valid = r#"
+        type Voltage = Number(symbol: "V");
+        type Resistance = Number(symbol: "Ω");
+        let supply = (value: Voltage) -> value;
+        let resistor = (value: Resistance) -> value;
+        supply(value: 5);
+        resistor(value: 1000)
+    "#;
+    assert!(compile(valid).is_ok());
+
+    let invalid = r#"
+        type Voltage = Number(symbol: "V");
+        type Resistance = Number(symbol: "Ω");
+        let supply = (value: Voltage) -> value;
+        let resistor = (value: Resistance) -> value;
+        supply(value: resistor(value: 1000))
+    "#;
+    assert!(compile(invalid).is_err());
 }
 
 #[test]

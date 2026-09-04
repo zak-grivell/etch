@@ -31,13 +31,45 @@ pub enum CompileErrors<'src> {
     SemanticError(SemanticError),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompileDiagnostic {
+    pub stage: &'static str,
+    pub message: String,
+    pub span: std::ops::Range<usize>,
+}
+
 impl<'src> CompileErrors<'src> {
-    fn stage(&self) -> String {
+    fn stage(&self) -> &'static str {
         match self {
-            Self::LexerError(_) => String::from("lexer"),
-            Self::ParserError(_) => String::from("parser"),
-            Self::ResolverError(_) => String::from("symbol resolver"),
-            Self::SemanticError(_) => String::from("type checking"),
+            Self::LexerError(_) => "lexer",
+            Self::ParserError(_) => "parser",
+            Self::ResolverError(_) => "symbol resolver",
+            Self::SemanticError(_) => "type checking",
+        }
+    }
+
+    pub fn diagnostic(&self) -> CompileDiagnostic {
+        match self {
+            Self::LexerError(error) => CompileDiagnostic {
+                stage: self.stage(),
+                message: error.to_string(),
+                span: error.span().into_range(),
+            },
+            Self::ParserError(error) => CompileDiagnostic {
+                stage: self.stage(),
+                message: error.to_string(),
+                span: error.span().into_range(),
+            },
+            Self::ResolverError(error) => CompileDiagnostic {
+                stage: self.stage(),
+                message: error.message.clone(),
+                span: error.span.into_range(),
+            },
+            Self::SemanticError(error) => CompileDiagnostic {
+                stage: self.stage(),
+                message: error.message.clone(),
+                span: error.span.into_range(),
+            },
         }
     }
 
