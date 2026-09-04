@@ -111,11 +111,10 @@ fn writes_schematic_pcb_and_display_svgs() {
         },
     })
     .unwrap();
-    assert!(
-        fs::read_to_string(kicad_schematic)
-            .unwrap()
-            .starts_with("(kicad_sch")
-    );
+    let kicad_schematic = fs::read_to_string(kicad_schematic).unwrap();
+    assert!(kicad_schematic.starts_with("(kicad_sch"));
+    assert!(kicad_schematic.contains("  (label \""));
+    assert!(!kicad_schematic.contains("  (wire "));
 
     let kicad_pcb = directory.0.join("board.kicad_pcb");
     execute(Cli {

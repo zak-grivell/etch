@@ -70,6 +70,10 @@ pub struct SchematicLayout {
 pub struct ComponentPlacement {
     pub x: f64,
     pub y: f64,
+    /// Clockwise schematic rotation in degrees.  Multi-pin symbols retain
+    /// their library orientation; two-pin parts follow the direction chosen
+    /// by the topology pass.
+    pub rotation: i32,
 }
 
 struct PreparedLayout<'a> {
@@ -94,6 +98,10 @@ pub fn layout(circuit: &CircuitDesign) -> SchematicLayout {
             ComponentPlacement {
                 x: placed.center.x,
                 y: placed.center.y,
+                rotation: match placed.orientation {
+                    Orientation::Horizontal if component.ports.len() == 2 => 90,
+                    _ => 0,
+                },
             }
         })
         .collect();
