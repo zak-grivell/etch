@@ -201,6 +201,3 @@ HELIX_RUNTIME="$PWD/.helix/runtime" hx
 
 The compiled grammar is a local build artifact. The verification script checks
 all examples and standard-library sources and compiles each editor query.
-
-See [CODEBASE_REVIEW.md](CODEBASE_REVIEW.md) for the review coverage and the
-follow-up evidence for all 18 findings.
