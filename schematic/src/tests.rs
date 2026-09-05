@@ -82,3 +82,37 @@ fn generic_ic_geometry_scales_and_splits_pins_across_both_sides() {
     assert!(generic_port_offset(&component, 0, 20).0 < 0.0);
     assert!(generic_port_offset(&component, 10, 20).0 > 0.0);
 }
+
+#[test]
+fn preserves_two_ports_on_the_same_electrical_node() {
+    let component = Component {
+        kind: "resistor".into(),
+        label: None,
+        value: None,
+        section: None,
+        svg: None,
+        kicad: None,
+        ports: BTreeMap::from([("a".into(), 1), ("b".into(), 1)]),
+    };
+    let ports = super::port_points(
+        &component,
+        Point { x: 0.0, y: 0.0 },
+        super::Orientation::Horizontal,
+    );
+    assert_eq!(ports.0.len(), 2);
+    assert_ne!(ports.0["a"].1.x, ports.0["b"].1.x);
+}
+#[test]
+fn crossing_nets_fall_back_without_partial_wires() {
+    let mut svg = String::new();
+    let result = super::draw_orthogonal_net(
+        &mut svg,
+        &[Point { x: 0.0, y: 0.0 }, Point { x: 100.0, y: 0.0 }],
+        &[],
+        &circuit_ir::CircuitDesign::default(),
+        &BTreeMap::new(),
+        &[(Point { x: 50.0, y: -100.0 }, Point { x: 50.0, y: 100.0 })],
+    );
+    assert!(result.is_err());
+    assert!(svg.is_empty());
+}

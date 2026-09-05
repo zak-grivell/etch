@@ -76,16 +76,24 @@ pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
         loaded_symbols.insert(library.clone(), generic_symbol(link));
     }
     out.push_str("  )\n");
+    for component in &circuit.components {
+        let link = component.kicad.as_ref().unwrap();
+        for (port, number) in &link.pins {
+            if !loaded_symbols[&link.symbol].pins.contains_key(number) {
+                return Err(format!(
+                    "KiCad symbol `{}` does not contain mapped pin `{number}` for port `{port}` in unit 1 (mapping other units is unsupported)",
+                    link.symbol
+                ));
+            }
+        }
+    }
     let positions = place_symbols(circuit, &loaded_symbols, &layout);
-    let mut references = BTreeMap::<String, usize>::new();
+    let references = references(circuit)?;
     let mut net_points = BTreeMap::<u64, Vec<NetPoint>>::new();
     for (index, component) in circuit.components.iter().enumerate() {
         let link = component.kicad.as_ref().unwrap();
         let loaded = &loaded_symbols[&link.symbol];
-        let prefix = reference_prefix(&link.symbol);
-        let number = references.entry(prefix.clone()).or_default();
-        *number += 1;
-        let reference = format!("{prefix}{number}");
+        let reference = &references[index];
         // KiCad's editor and symbol libraries are built around a 50 mil
         // (1.27 mm) grid.  Snapping the symbol origins keeps every pin and
         // label editable without the tiny off-grid wire fragments produced by
@@ -93,7 +101,7 @@ pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
         let SymbolPosition { x, y, rotation } = positions[index];
         let value = component.value.as_deref().unwrap_or(&component.kind);
         writeln!(out, "  (symbol (lib_id \"{}\") (at {x} {y} {rotation}) (unit 1) (exclude_from_sim no) (in_bom yes) (on_board yes) (dnp no) (uuid \"{}\")", esc(&link.symbol), uuid(index + 1, 0)).unwrap();
-        instance_property(&mut out, "Reference", &reference, x, y - 5.0, false);
+        instance_property(&mut out, "Reference", reference, x, y - 5.0, false);
         instance_property(&mut out, "Value", value, x, y + 5.0, false);
         instance_property(&mut out, "Footprint", &link.footprint, x, y, true);
         instance_property(&mut out, "Datasheet", "~", x, y, true);
@@ -125,7 +133,7 @@ pub fn schematic(circuit: &CircuitDesign) -> Result<String, String> {
             )
             .unwrap();
         }
-        writeln!(out, "    (instances (project \"etch\" (path \"/{root_uuid}\" (reference \"{}\") (unit 1))))\n  )", esc(&reference)).unwrap();
+        writeln!(out, "    (instances (project \"etch\" (path \"/{root_uuid}\" (reference \"{}\") (unit 1))))\n  )", esc(reference)).unwrap();
     }
     // A schematic net is a logical hyperedge, not an ordered list of pins.
     // The old exporter converted it into a declaration-order daisy chain,
@@ -170,14 +178,7 @@ fn place_symbols(
         };
         circuit.components.len()
     ];
-    let mut sections = circuit.sections.clone();
-    if circuit
-        .components
-        .iter()
-        .any(|component| component.section.is_none())
-    {
-        sections.insert(0, "Circuit".into());
-    }
+    let sections = circuit.section_names();
     let mut column = 0usize;
     let mut cursor_y = PAGE_TOP;
 
@@ -325,20 +326,21 @@ fn snap(value: f64) -> f64 {
 }
 
 fn rotate_pin(pin: Pin, rotation: i32) -> Point {
+    // Library coordinates point up; schematic page coordinates point down.
     match rotation.rem_euclid(360) {
         90 => Point {
             x: -pin.y,
-            y: pin.x,
+            y: -pin.x,
         },
         180 => Point {
             x: -pin.x,
+            y: pin.y,
+        },
+        270 => Point { x: pin.y, y: pin.x },
+        _ => Point {
+            x: pin.x,
             y: -pin.y,
         },
-        270 => Point {
-            x: pin.y,
-            y: -pin.x,
-        },
-        _ => Point { x: pin.x, y: pin.y },
     }
 }
 

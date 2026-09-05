@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
-use circuit_ir::CircuitDesign;
+use circuit_ir::{CircuitDesign, sexpr::SExpr};
 
 use crate::common::*;
 
@@ -12,6 +12,12 @@ pub fn pcb(circuit: &CircuitDesign) -> Result<String, String> {
         .as_ref()
         .ok_or_else(|| "KiCad PCB export requires pcb_config(...)".to_owned())?;
     let layout = pcb::layout(circuit)?;
+    if layout.unrouted_connections > 0 {
+        return Err(format!(
+            "PCB export has {} unrouted connections; increase board space or revise placement constraints",
+            layout.unrouted_connections
+        ));
+    }
     let physical = layout
         .components
         .iter()
@@ -41,9 +47,22 @@ pub fn pcb(circuit: &CircuitDesign) -> Result<String, String> {
         .enumerate()
         .map(|(index, root)| (*root, index + 1))
         .collect::<BTreeMap<_, _>>();
+    let version = physical
+        .iter()
+        .filter_map(|placed| {
+            placed
+                .footprint
+                .definition
+                .field("version")
+                .and_then(|v| v.value(1))
+                .and_then(|v| v.parse::<u32>().ok())
+        })
+        .max()
+        .unwrap_or(20240108);
     let mut out = String::from(
         "(kicad_pcb (version 20240108) (generator etch)\n  (general (thickness 1.6))\n  (paper \"A4\")\n  (layers\n    (0 \"F.Cu\" signal)\n",
     );
+    out = out.replace("20240108", &version.to_string());
     for layer in 1..config.layers.saturating_sub(1) {
         writeln!(out, "    ({} \"In{layer}.Cu\" signal)", layer * 2).unwrap();
     }
@@ -51,7 +70,7 @@ pub fn pcb(circuit: &CircuitDesign) -> Result<String, String> {
     for (root, id) in &net_ids {
         writeln!(out, "  (net {id} \"{}\")", esc(names.get(root).unwrap())).unwrap();
     }
-    let mut refs = BTreeMap::<String, usize>::new();
+    let references = references(circuit)?;
     let map = |point: pcb::Point| Point {
         x: 100.0 + config.width / 2.0 + point.x,
         y: 100.0 + config.height / 2.0 - point.y,
@@ -60,24 +79,70 @@ pub fn pcb(circuit: &CircuitDesign) -> Result<String, String> {
         let component = &circuit.components[placed.component_index];
         let center = map(placed.center);
         let link = component.kicad.as_ref().unwrap();
-        let prefix = reference_prefix(&link.symbol);
-        let count = refs.entry(prefix.clone()).or_default();
-        *count += 1;
-        let reference = format!("{prefix}{count}");
-        writeln!(out, "  (footprint \"{}\"", esc(&link.footprint)).unwrap();
-        // Pad offsets below already include the packer's selected rotation.
-        writeln!(out, "    (layer \"F.Cu\") (at {} {})", center.x, center.y).unwrap();
-        writeln!(out, "    (uuid \"{}\")", uuid(index + 1, 0)).unwrap();
-        writeln!(out, "    (property \"Reference\" \"{}\" (at 0 -2 0) (layer \"F.SilkS\") (effects (font (size 1 1) (thickness 0.15))))", esc(&reference)).unwrap();
-        writeln!(out, "    (property \"Value\" \"{}\" (at 0 2 0) (layer \"F.Fab\") hide (effects (font (size 1 1) (thickness 0.15))))", esc(component.value.as_deref().unwrap_or(&component.kind))).unwrap();
-        for (pad_index, (port, node)) in component.ports.iter().enumerate() {
-            let root = roots.get(node).copied().unwrap_or(*node);
-            let pad = map(placed.pads[node]);
-            let pad_x = pad.x - center.x;
-            let pad_y = pad.y - center.y;
-            writeln!(out, "    (pad \"{}\" thru_hole circle (at {pad_x} {pad_y}) (size 1.2 1.2) (drill 0.6) (layers \"*.Cu\" \"*.Mask\") (net {} \"{}\") (uuid \"{}\"))", esc(&link.pins[port]), net_ids[&root], esc(names.get(&root).unwrap()), uuid(index + 1, pad_index + 1)).unwrap();
+        let reference = &references[placed.component_index];
+        let mut definition = placed.footprint.definition.clone();
+        definition.items_mut()[1] = SExpr::string(&link.footprint);
+        definition.remove_recursive("uuid");
+        definition.remove_recursive("tstamp");
+        for name in ["version", "generator", "generator_version"] {
+            definition.remove(name);
         }
-        out.push_str("  )\n");
+        definition.set(SExpr::list(
+            "at",
+            [
+                SExpr::atom(center.x),
+                SExpr::atom(center.y),
+                SExpr::atom(placed.rotation),
+            ],
+        ));
+        let at = definition.field("at").unwrap().clone();
+        definition.remove("at");
+        definition.items_mut().insert(2, at);
+        definition.set(SExpr::list("uuid", [SExpr::string(uuid(index + 1, 0))]));
+        for item in definition.items_mut() {
+            if item.tag() == Some("property") || item.tag() == Some("fp_text") {
+                match item.value(1) {
+                    Some("Reference" | "reference") => {
+                        item.items_mut()[2] = SExpr::string(reference)
+                    }
+                    Some("Value" | "value") => {
+                        item.items_mut()[2] =
+                            SExpr::string(component.value.as_deref().unwrap_or(&component.kind))
+                    }
+                    _ => {}
+                }
+            }
+            if item.tag() == Some("pad") {
+                let number = item.value(1).unwrap_or("");
+                let node = placed
+                    .pads
+                    .iter()
+                    .find(|pad| pad.number == number)
+                    .and_then(|pad| pad.node);
+                item.remove("net");
+                if let Some(node) = node {
+                    let root = roots[&node];
+                    item.set(SExpr::list(
+                        "net",
+                        [SExpr::atom(net_ids[&root]), SExpr::string(&names[&root])],
+                    ));
+                }
+            }
+            if matches!(item.tag(), Some("pad" | "property" | "fp_text"))
+                && let Some(at) = item.field("at").cloned()
+            {
+                let angle = at.value(3).map_or(Ok(0.0), |_| at.number(3))? + placed.rotation as f64;
+                item.set(SExpr::list(
+                    "at",
+                    [
+                        SExpr::atom(at.number(1)?),
+                        SExpr::atom(at.number(2)?),
+                        SExpr::atom(angle),
+                    ],
+                ));
+            }
+        }
+        writeln!(out, "  {definition}").unwrap();
     }
     for trace in &layout.traces {
         let Some(net) = net_ids.get(&trace.root).copied() else {
@@ -120,19 +185,6 @@ fn copper_layer_name(layer: usize, count: usize) -> String {
     } else {
         format!("In{layer}.Cu")
     }
-}
-
-fn ensure_links(circuit: &CircuitDesign) -> Result<(), String> {
-    circuit
-        .components
-        .iter()
-        .find(|component| component.kicad.is_none())
-        .map_or(Ok(()), |component| {
-            Err(format!(
-                "component kind `{}` has no KiCad link; add kicad: {{ symbol, footprint, pins }} to use_symbol",
-                component.kind
-            ))
-        })
 }
 
 fn segment(out: &mut String, a: Point, b: Point, width: f64, layer: &str, net: usize) {

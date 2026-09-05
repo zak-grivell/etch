@@ -1,3 +1,4 @@
+use circuit_ir::sexpr::SExpr;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -38,11 +39,37 @@ pub(crate) fn load(library_id: &str) -> Result<Option<LibrarySymbol>, String> {
     };
     let original_name = opening_name(&definition).unwrap().to_owned();
     definition = rename_definition(&definition, &original_name, library_id);
-    let pins = extract_pins(&definition);
+    let pins = unit_one_pins(&definition)?;
     if pins.is_empty() {
         return Err(format!("KiCad symbol `{library_id}` has no pins"));
     }
     Ok(Some(LibrarySymbol { definition, pins }))
+}
+
+fn unit_one_pins(definition: &str) -> Result<BTreeMap<String, Pin>, String> {
+    let parsed = SExpr::parse(definition)?;
+    let mut pins = BTreeMap::new();
+    for unit in parsed
+        .items()
+        .iter()
+        .filter(|item| item.tag() == Some("symbol"))
+    {
+        let name = unit.value(1).unwrap_or("");
+        let unit_number = name
+            .rsplit('_')
+            .nth(1)
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(1);
+        let style = name
+            .rsplit('_')
+            .next()
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(1);
+        if unit_number <= 1 && style <= 1 {
+            pins.extend(extract_pins(&unit.to_string()));
+        }
+    }
+    Ok(pins)
 }
 
 fn symbol_directories() -> Vec<PathBuf> {
@@ -88,9 +115,31 @@ fn resolve_definition(
     let resolved = resolve_definition(source, &base, resolving)?;
     resolving.pop();
     resolved
-        .map(|definition| rename_definition(&definition, &base, name))
+        .map(|base_definition| {
+            merge_inherited(
+                &rename_definition(&base_definition, &base, name),
+                &definition,
+            )
+        })
+        .transpose()?
         .map(Some)
         .ok_or_else(|| format!("base KiCad symbol `{base}` for `{name}` was not found"))
+}
+
+fn merge_inherited(base: &str, child: &str) -> Result<String, String> {
+    let mut base = SExpr::parse(base)?;
+    let child = SExpr::parse(child)?;
+    for field in child.items().iter().skip(2) {
+        if field.tag() == Some("extends") {
+            continue;
+        }
+        let tag = field.tag();
+        let name = field.value(1);
+        base.items_mut()
+            .retain(|old| !(old.tag() == tag && (tag != Some("property") || old.value(1) == name)));
+        base.items_mut().push(field.clone());
+    }
+    Ok(base.to_string())
 }
 
 fn find_definition(source: &str, name: &str) -> Option<String> {
@@ -219,5 +268,33 @@ mod tests {
         let pins = extract_pins(&definition);
         assert_eq!(pins["1"].x, -5.08);
         assert_eq!(pins["1"].y, 2.54);
+    }
+}
+
+#[cfg(test)]
+mod followup_tests {
+    use super::*;
+    #[test]
+    fn derived_symbol_properties_override_the_base() {
+        let source = r#"(kicad_symbol_lib
+            (symbol "Base" (property "Reference" "U") (property "Value" "Base") (property "Footprint" "Old:Part")
+                (symbol "Base_1_1" (pin passive line (at 1 2 0) (number "1"))))
+            (symbol "Child" (extends "Base") (property "Value" "Child") (property "Footprint" "New:Part")))"#;
+        let definition = resolve_definition(source, "Child", &mut Vec::new())
+            .unwrap()
+            .unwrap();
+        assert!(definition.contains(r#"(property "Reference" "U")"#));
+        assert!(definition.contains(r#"(property "Footprint" "New:Part")"#));
+        assert!(!definition.contains("Old:Part"));
+        assert_eq!(unit_one_pins(&definition).unwrap().len(), 1);
+    }
+    #[test]
+    fn later_units_and_alternate_styles_are_not_exported_as_unit_one() {
+        let source = r#"(symbol "Dual" (symbol "Dual_0_1" (pin passive line (at 0 0 0) (number "8")))
+          (symbol "Dual_1_1" (pin passive line (at 1 0 0) (number "1")))
+          (symbol "Dual_2_1" (pin passive line (at 2 0 0) (number "2")))
+          (symbol "Dual_1_2" (pin passive line (at 3 0 0) (number "3"))))"#;
+        let pins = unit_one_pins(source).unwrap();
+        assert_eq!(pins.keys().cloned().collect::<Vec<_>>(), vec!["1", "8"]);
     }
 }

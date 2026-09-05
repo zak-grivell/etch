@@ -4,9 +4,12 @@ pub(super) fn draw_orthogonal_net(
     placed: &[Placed<'_>],
     circuit: &CircuitDesign,
     roots: &BTreeMap<u64, u64>,
-) {
+    occupied: &[(Point, Point)],
+) -> Result<Vec<(Point, Point)>, ()> {
+    let mut drawing = String::new();
+    let mut segments = Vec::new();
     if terminals.len() < 2 {
-        return;
+        return Ok(segments);
     }
     let root_index = terminals
         .iter()
@@ -58,7 +61,24 @@ pub(super) fn draw_orthogonal_net(
                 .unwrap_or_default()
         };
         if path.len() < 2 {
-            continue;
+            return Err(());
+        }
+        for pair in path.windows(2) {
+            if occupied
+                .iter()
+                .any(|(a, b)| segments_intersect(pair[0], pair[1], *a, *b))
+            {
+                return Err(());
+            }
+            for (index, item) in placed.iter().enumerate() {
+                if Some(index) != terminal_owner(path[0], placed)
+                    && Some(index) != terminal_owner(*path.last().unwrap(), placed)
+                    && !segment_clear(pair[0], pair[1], &[routing_hitbox(item, 0.0)])
+                {
+                    return Err(());
+                }
+            }
+            segments.push((pair[0], pair[1]));
         }
         let mut data = format!("M {} {}", path[0].x, path[0].y);
         for pair in path.windows(2) {
@@ -69,7 +89,7 @@ pub(super) fn draw_orthogonal_net(
                 write!(data, " H {}", next.x).unwrap();
             }
         }
-        writeln!(svg, r#"<path class="wire" d="{data}"/>"#).unwrap();
+        writeln!(drawing, r#"<path class="wire" d="{data}"/>"#).unwrap();
         let existing = tree_points.clone();
         for point in &path {
             if !tree_points
@@ -94,13 +114,23 @@ pub(super) fn draw_orthogonal_net(
         if existing.len() > 1 {
             let junction = *path.last().unwrap();
             writeln!(
-                svg,
+                drawing,
                 r#"<circle class="junction" cx="{}" cy="{}" r="2.5"/>"#,
                 junction.x, junction.y
             )
             .unwrap();
         }
     }
+    svg.push_str(&drawing);
+    Ok(segments)
+}
+
+fn segments_intersect(a: Point, b: Point, c: Point, d: Point) -> bool {
+    let epsilon = 0.01;
+    a.x.min(b.x) <= c.x.max(d.x) + epsilon
+        && c.x.min(d.x) <= a.x.max(b.x) + epsilon
+        && a.y.min(b.y) <= c.y.max(d.y) + epsilon
+        && c.y.min(d.y) <= a.y.max(b.y) + epsilon
 }
 
 pub(super) fn route_cost(path: &[Point]) -> u64 {

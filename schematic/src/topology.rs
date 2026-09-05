@@ -238,18 +238,7 @@ pub(super) fn compact_topology(items: &mut [Placed<'_>], roots: &BTreeMap<u64, u
 }
 
 pub(super) fn section_names(circuit: &CircuitDesign) -> Vec<String> {
-    let mut sections = circuit.sections.clone();
-    if circuit
-        .components
-        .iter()
-        .any(|component| component.section.is_none())
-    {
-        sections.insert(0, "Circuit".into());
-    }
-    if sections.is_empty() {
-        sections.push("Circuit".into());
-    }
-    sections
+    circuit.section_names()
 }
 
 pub(super) fn graph_layers(components: &[&Component], roots: &BTreeMap<u64, u64>) -> Vec<usize> {
@@ -501,7 +490,7 @@ pub(super) fn port_points(
     component: &Component,
     center: Point,
     orientation: Orientation,
-) -> BTreeMap<u64, Point> {
+) -> PortPositions {
     let count = component.ports.len();
     component
         .ports
@@ -509,7 +498,7 @@ pub(super) fn port_points(
         .enumerate()
         .map(|(index, (name, node))| {
             let point = port_point(component, name, index, count, center, orientation);
-            (*node, point)
+            (name.clone(), (*node, point))
         })
         .collect()
 }
@@ -534,8 +523,12 @@ pub(super) fn port_point(
     } else {
         name
     };
-    let (mut x, mut y) = svg_port(metadata, &symbol, metadata_name)
-        .unwrap_or_else(|| generic_port_offset(component, index, count));
+    let (mut x, mut y) = if is_generic_component(component) {
+        generic_port_offset(component, index, count)
+    } else {
+        svg_port(metadata, &symbol, metadata_name)
+            .unwrap_or_else(|| generic_port_offset(component, index, count))
+    };
     if orientation == Orientation::Vertical {
         (x, y) = (-y, x);
     }

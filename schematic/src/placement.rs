@@ -56,12 +56,11 @@ pub(super) fn resolve_component_overlaps(
         };
         let moving = component_hitbox(&placed[move_index], CLEARANCE);
         let fixed = component_hitbox(&placed[fixed_index], CLEARANCE);
-        placed[move_index].center.y += (fixed.bottom - moving.top + 1.0).max(1.0);
-        placed[move_index].ports = port_points(
-            placed[move_index].component,
-            placed[move_index].center,
-            placed[move_index].orientation,
-        );
+        let offset = (fixed.bottom - moving.top + 1.0).max(1.0);
+        placed[move_index].center.y += offset;
+        for point in placed[move_index].ports.values_mut() {
+            point.y += offset;
+        }
     }
     debug_assert!(!placed.iter().enumerate().any(|(first, a)| {
         placed.iter().skip(first + 1).any(|b| {
@@ -90,6 +89,7 @@ pub(super) fn component_hitbox(item: &Placed<'_>, clearance: f64) -> Hitbox {
             clearance.min(10.0),
         ),
         _ if item.component.ports.len() >= 3 => (40.0, 25.0, clearance.min(8.0)),
+        Orientation::Vertical => (component_height / 2.0, component_width / 2.0, clearance),
         _ => (component_width / 2.0, component_height / 2.0, clearance),
     };
     Hitbox {
@@ -207,6 +207,9 @@ pub(super) fn align_major_signal_spine(placed: &mut [Placed<'_>], roots: &BTreeM
     for pair in anchors.windows(2) {
         let previous = pair[0].0;
         let next = pair[1].0;
+        if placed[previous].section != placed[next].section {
+            continue;
+        }
         let shared = placed[previous]
             .component
             .ports
@@ -252,17 +255,20 @@ pub(super) fn compact_inline_branches(placed: &mut [Placed<'_>], roots: &BTreeMa
         })
         .flat_map(|item| {
             item.component.ports.values().filter_map(|node| {
-                item.ports
-                    .get(node)
-                    .copied()
-                    .map(|point| (roots.get(node).copied().unwrap_or(*node), point))
+                item.ports.get(node).copied().map(|point| {
+                    (
+                        item.section.clone(),
+                        roots.get(node).copied().unwrap_or(*node),
+                        point,
+                    )
+                })
             })
         })
         .collect::<Vec<_>>();
-    for (root, feeder) in feeders {
+    for (section, root, feeder) in feeders {
         for item in placed
             .iter_mut()
-            .filter(|item| item.orientation == Orientation::Vertical)
+            .filter(|item| item.orientation == Orientation::Vertical && item.section == section)
         {
             let Some((node, port)) = item.component.ports.values().find_map(|node| {
                 (roots.get(node).copied().unwrap_or(*node) == root)

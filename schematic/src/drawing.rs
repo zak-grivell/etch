@@ -1,3 +1,5 @@
+use super::*;
+
 pub(super) fn draw_sections(
     svg: &mut String,
     sections: &[String],
@@ -68,6 +70,7 @@ pub(super) fn draw_wires(
         })
         .collect::<BTreeMap<_, _>>();
 
+    let mut occupied = Vec::new();
     for (root, points) in endpoints {
         let is_ground_net = placed.iter().any(|item| {
             matches!(
@@ -136,9 +139,9 @@ pub(super) fn draw_wires(
             }
             continue;
         }
-        if section_count > 1
-            && let Some(label) = labels.get(&root)
-        {
+        if section_count > 1 {
+            let generated = format!("Net-{root}");
+            let label = labels.get(&root).copied().unwrap_or(&generated);
             for (_, point, is_terminal) in &points {
                 if *is_terminal {
                     continue;
@@ -157,7 +160,20 @@ pub(super) fn draw_wires(
                 .iter()
                 .map(|(_, point, _)| *point)
                 .collect::<Vec<_>>();
-            draw_orthogonal_net(svg, &route_points, placed, circuit, roots);
+            match draw_orthogonal_net(svg, &route_points, placed, circuit, roots, &occupied) {
+                Ok(segments) => occupied.extend(segments),
+                Err(()) => {
+                    let generated = format!("Net-{root}");
+                    let label = labels.get(&root).copied().unwrap_or(&generated);
+                    for (_, point, _) in &points {
+                        let side = placed
+                            .iter()
+                            .find(|item| item.ports.values().any(|port| same_point(*port, *point)))
+                            .map_or(1, |item| if point.x < item.center.x { -1 } else { 1 });
+                        draw_net_tag(svg, *point, side, label);
+                    }
+                }
+            }
         }
     }
 }
@@ -227,7 +243,7 @@ pub(super) fn draw_components(
         if !component_is_visible(circuit, item, roots) {
             continue;
         }
-        let count = counts.entry(&item.component.kind).or_default();
+        let count = counts.entry(prefix(&item.component.kind)).or_default();
         *count += 1;
         let label = item
             .component
@@ -512,4 +528,3 @@ pub(super) const STYLE_AND_SYMBOLS: &str = r##"
   <symbol id="symbol-d-flip-flop-clock-top" data-ports="clock:-40,-18;d:-40,18;q:40,-18" viewBox="-40 -30 80 60"><path d="M-40-18h15M-40 18h15M25-18h15M-25-25h50v50h-50zM-25-24l8 6-8 6" fill="white" stroke="#172033" stroke-width="2"/><text x="-18" y="22" font-size="10">D</text><text x="13" y="-12" font-size="10">Q</text></symbol>
 </defs>
 "##;
-use super::*;

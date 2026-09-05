@@ -32,11 +32,47 @@ struct Hitbox {
     bottom: f64,
 }
 
+struct PortPositions(BTreeMap<String, (u64, Point)>);
+impl PortPositions {
+    fn values(&self) -> impl Iterator<Item = &Point> {
+        self.0.values().map(|(_, point)| point)
+    }
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut Point> {
+        self.0.values_mut().map(|(_, point)| point)
+    }
+    fn get(&self, node: &u64) -> Option<&Point> {
+        self.0
+            .values()
+            .find(|(id, _)| id == node)
+            .map(|(_, point)| point)
+    }
+    fn insert(&mut self, node: u64, point: Point) {
+        if let Some((_, old)) = self.0.values_mut().find(|(id, _)| *id == node) {
+            *old = point;
+        }
+    }
+}
+impl<'a> IntoIterator for &'a PortPositions {
+    type Item = (&'a u64, &'a Point);
+    type IntoIter = std::iter::Map<
+        std::collections::btree_map::Values<'a, String, (u64, Point)>,
+        fn(&'a (u64, Point)) -> Self::Item,
+    >;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.values().map(|(node, point)| (node, point))
+    }
+}
+impl FromIterator<(String, (u64, Point))> for PortPositions {
+    fn from_iter<T: IntoIterator<Item = (String, (u64, Point))>>(iter: T) -> Self {
+        Self(iter.into_iter().collect())
+    }
+}
+
 struct Placed<'a> {
     component: &'a Component,
     center: Point,
     section: String,
-    ports: BTreeMap<u64, Point>,
+    ports: PortPositions,
     orientation: Orientation,
 }
 

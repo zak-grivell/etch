@@ -1,3 +1,5 @@
+pub mod footprint;
+use footprint::{Footprint, Pad};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::fmt::Write;
@@ -17,7 +19,8 @@ pub struct PlacedComponent {
     pub width: f64,
     pub height: f64,
     pub rotation: i32,
-    pub pads: BTreeMap<u64, Point>,
+    pub pads: Vec<Pad>,
+    pub footprint: Footprint,
 }
 
 pub struct PcbLayout {
@@ -33,12 +36,7 @@ pub struct TraceSegment {
     pub points: Vec<Point>,
 }
 
-/// Produce a deliberately small, deterministic first PCB implementation.
-///
-/// Its data boundary mirrors tscircuit's SimpleRouteJson: board bounds and
-/// layer count come from `pcb_config`, symbols become rectangular obstacles,
-/// and each electrical root becomes a connection between pad points. The
-/// initial router uses orthogonal paths and distributes nets between layers.
+/// Render the placed and routed board as an SVG preview.
 pub fn render(circuit: &CircuitDesign) -> Result<String, String> {
     let config = circuit
         .pcb
@@ -53,12 +51,28 @@ pub fn layout(circuit: &CircuitDesign) -> Result<PcbLayout, String> {
         .pcb
         .as_ref()
         .ok_or_else(|| "PCB generation requires pcb_config(...)".to_owned())?;
+    config.validate()?;
+    if let Some(component) = circuit
+        .components
+        .iter()
+        .find(|component| component.kicad.is_none())
+    {
+        return Err(format!(
+            "component `{}` has no physical footprint metadata",
+            component.kind
+        ));
+    }
     let roots = circuit.electrical_roots();
     let components = circuit
         .components
         .iter()
         .enumerate()
-        .filter(|(_, component)| !matches!(component.kind.as_str(), "ground" | "supply"))
+        .filter(|(_, component)| {
+            component
+                .kicad
+                .as_ref()
+                .is_some_and(|link| !link.footprint.is_empty())
+        })
         .collect::<Vec<_>>();
     if components.is_empty() {
         return Err("PCB generation requires at least one component symbol".into());
@@ -103,9 +117,11 @@ fn route_nets(
     let pad_obstacles = placed
         .iter()
         .flat_map(|item| {
-            item.pads.iter().map(|(node, point)| {
-                let root = roots.get(node).copied().unwrap_or(*node);
-                (root, *point)
+            item.pads.iter().map(|pad| {
+                let root = pad
+                    .node
+                    .map(|node| roots.get(&node).copied().unwrap_or(node));
+                (root, pad.point, pad.width, pad.height, pad.through)
             })
         })
         .collect::<Vec<_>>();
@@ -125,6 +141,15 @@ fn route_nets(
             layers.sort_by_key(|layer| occupied[*layer].len());
             let mut best = None;
             for layer in layers {
+                if layer != 0
+                    && [target, tree_point].iter().any(|point| {
+                        !pad_obstacles.iter().any(|(_, pad, _, _, through)| {
+                            *through && manhattan(*pad, *point) < 1e-6
+                        })
+                    })
+                {
+                    continue;
+                }
                 let mut obstacles = component_obstacles
                     .iter()
                     .copied()
@@ -144,12 +169,24 @@ fn route_nets(
                 obstacles.extend(
                     pad_obstacles
                         .iter()
-                        .filter(|(pad_root, _)| pad_root != root)
-                        .map(|(_, point)| Hitbox {
-                            left: point.x - 0.6 - config.clearance - config.min_trace_width / 2.0,
-                            right: point.x + 0.6 + config.clearance + config.min_trace_width / 2.0,
-                            bottom: point.y - 0.6 - config.clearance - config.min_trace_width / 2.0,
-                            top: point.y + 0.6 + config.clearance + config.min_trace_width / 2.0,
+                        .filter(|(pad_root, ..)| *pad_root != Some(*root))
+                        .map(|(_, point, width, height, _)| Hitbox {
+                            left: point.x
+                                - width / 2.0
+                                - config.clearance
+                                - config.min_trace_width / 2.0,
+                            right: point.x
+                                + width / 2.0
+                                + config.clearance
+                                + config.min_trace_width / 2.0,
+                            bottom: point.y
+                                - height / 2.0
+                                - config.clearance
+                                - config.min_trace_width / 2.0,
+                            top: point.y
+                                + height / 2.0
+                                + config.clearance
+                                + config.min_trace_width / 2.0,
                         }),
                 );
                 if let Some(path) = route_between(target, tree_point, &obstacles, config) {
@@ -170,9 +207,9 @@ fn route_nets(
             traces.push(TraceSegment {
                 root: *root,
                 layer,
-                points: path.clone(),
+                points: path,
             });
-            tree.extend(path);
+            tree.push(target);
             remaining.remove(remaining_index);
         }
     }
@@ -185,6 +222,13 @@ fn route_between(
     obstacles: &[Hitbox],
     config: &PcbConfig,
 ) -> Option<Vec<Point>> {
+    let inset = config.clearance + config.min_trace_width / 2.0;
+    let on_board = |point: Point| {
+        point.x.abs() <= config.width / 2.0 - inset && point.y.abs() <= config.height / 2.0 - inset
+    };
+    if !on_board(start) || !on_board(goal) {
+        return None;
+    }
     for corner in [
         Point {
             x: goal.x,
@@ -220,6 +264,8 @@ fn route_between(
         xs.extend([obstacle.left - channel, obstacle.right + channel]);
         ys.extend([obstacle.bottom - channel, obstacle.top + channel]);
     }
+    xs.retain(|x| x.abs() <= config.width / 2.0 - inset);
+    ys.retain(|y| y.abs() <= config.height / 2.0 - inset);
     xs.sort_by(f64::total_cmp);
     ys.sort_by(f64::total_cmp);
     xs.dedup_by(|a, b| (*a - *b).abs() < 0.001);
@@ -362,28 +408,28 @@ fn place_components(
     config: &PcbConfig,
     roots: &BTreeMap<u64, u64>,
 ) -> Result<Vec<PlacedComponent>, String> {
-    const BODY_WIDTH: f64 = 5.0;
-    const PAD_PITCH: f64 = 1.6;
     const MARGIN: f64 = 2.0;
     let mut order = components
         .iter()
-        .map(|(component_index, component)| {
-            let port_count = component.ports.len().max(1);
-            let height = (port_count.div_ceil(2) as f64 * PAD_PITCH + 1.8).max(4.0);
-            (*component_index, *component, BODY_WIDTH * height)
+        .map(|(index, component)| {
+            Footprint::load(component).map(|footprint| (*index, *component, footprint))
         })
-        .collect::<Vec<_>>();
-    order.sort_by(|a, b| b.2.total_cmp(&a.2).then(a.0.cmp(&b.0)));
+        .collect::<Result<Vec<_>, _>>()?;
+    order.sort_by(|a, b| {
+        (b.2.width * b.2.height)
+            .total_cmp(&(a.2.width * a.2.height))
+            .then(a.0.cmp(&b.0))
+    });
     let mut placed: Vec<PlacedComponent> = Vec::with_capacity(components.len());
-    for (component_index, component, _) in order {
-        let port_count = component.ports.len().max(1);
-        let natural_height = (port_count.div_ceil(2) as f64 * PAD_PITCH + 1.8).max(4.0);
+    for (component_index, component, footprint) in order {
+        let natural_width = footprint.width;
+        let natural_height = footprint.height;
         let mut best: Option<(f64, PlacedComponent)> = None;
         for rotation in [0, 90, 180, 270] {
             let (width, height) = if rotation % 180 == 0 {
-                (BODY_WIDTH, natural_height)
+                (natural_width, natural_height)
             } else {
-                (natural_height, BODY_WIDTH)
+                (natural_height, natural_width)
             };
             let min_x = -config.width / 2.0 + MARGIN + width / 2.0;
             let max_x = config.width / 2.0 - MARGIN - width / 2.0;
@@ -391,7 +437,7 @@ fn place_components(
             let max_y = config.height / 2.0 - MARGIN - height / 2.0;
             let mut candidates = vec![Point { x: 0.0, y: 0.0 }];
             for other in &placed {
-                let gap = config.clearance;
+                let gap = config.clearance + 1.2;
                 let left = other.center.x - other.width / 2.0 - gap - width / 2.0;
                 let right = other.center.x + other.width / 2.0 + gap + width / 2.0;
                 let below = other.center.y - other.height / 2.0 - gap - height / 2.0;
@@ -449,18 +495,23 @@ fn place_components(
                 }) {
                     return;
                 }
-                let pads = component_pads(component, center, rotation);
+                let pads = component_pads(&footprint, center, rotation);
                 let mut connection_cost = 0.0;
                 let mut connection_count = 0usize;
-                for (node, pad) in &pads {
-                    let root = roots.get(node).copied().unwrap_or(*node);
+                for pad in &pads {
+                    let Some(node) = pad.node else {
+                        continue;
+                    };
+                    let root = roots.get(&node).copied().unwrap_or(node);
                     if let Some(distance) = placed
                         .iter()
                         .flat_map(|other| &other.pads)
-                        .filter(|(other_node, _)| {
-                            roots.get(other_node).copied().unwrap_or(**other_node) == root
+                        .filter(|other| {
+                            other.node.is_some_and(|node| {
+                                roots.get(&node).copied().unwrap_or(node) == root
+                            })
                         })
-                        .map(|(_, other_pad)| manhattan(*pad, *other_pad))
+                        .map(|other| manhattan(pad.point, other.point))
                         .reduce(f64::min)
                     {
                         connection_cost += distance;
@@ -480,6 +531,7 @@ fn place_components(
                     height,
                     rotation,
                     pads,
+                    footprint: footprint.clone(),
                 };
                 if best
                     .as_ref()
@@ -504,39 +556,21 @@ fn place_components(
     Ok(placed)
 }
 
-fn component_pads(component: &Component, center: Point, rotation: i32) -> BTreeMap<u64, Point> {
-    const BODY_WIDTH: f64 = 5.0;
-    const PAD_PITCH: f64 = 1.6;
-    let port_count = component.ports.len().max(1);
-    component
-        .ports
-        .values()
-        .enumerate()
-        .map(|(pad_index, node)| {
-            let left = pad_index % 2 == 0;
-            let side_index = pad_index / 2;
-            let side_count = if left {
-                port_count.div_ceil(2)
-            } else {
-                port_count / 2
+fn component_pads(footprint: &Footprint, center: Point, rotation: i32) -> Vec<Pad> {
+    footprint
+        .pads
+        .iter()
+        .map(|pad| {
+            let mut pad = pad.clone();
+            let point = rotate(pad.point, rotation);
+            pad.point = Point {
+                x: center.x + point.x,
+                y: center.y + point.y,
             };
-            let local = Point {
-                x: if left {
-                    -BODY_WIDTH / 2.0
-                } else {
-                    BODY_WIDTH / 2.0
-                },
-                y: (side_count.saturating_sub(1) as f64 * PAD_PITCH / 2.0)
-                    - side_index as f64 * PAD_PITCH,
-            };
-            let rotated = rotate(local, rotation);
-            (
-                *node,
-                Point {
-                    x: center.x + rotated.x,
-                    y: center.y + rotated.y,
-                },
-            )
+            if rotation % 180 != 0 {
+                std::mem::swap(&mut pad.width, &mut pad.height);
+            }
+            pad
         })
         .collect()
 }
@@ -574,10 +608,13 @@ fn collect_nets(
 ) -> BTreeMap<u64, Vec<Point>> {
     let mut nets = BTreeMap::<u64, Vec<Point>>::new();
     for item in placed {
-        for (node, point) in &item.pads {
-            nets.entry(roots.get(node).copied().unwrap_or(*node))
+        for pad in &item.pads {
+            let Some(node) = pad.node else {
+                continue;
+            };
+            nets.entry(roots.get(&node).copied().unwrap_or(node))
                 .or_default()
-                .push(*point);
+                .push(pad.point);
         }
     }
     nets.retain(|_, points| points.len() > 1);
@@ -643,8 +680,8 @@ fn draw(circuit: &CircuitDesign, config: &PcbConfig, layout: &PcbLayout) -> Stri
             item.height * SCALE
         )
         .unwrap();
-        for point in item.pads.values() {
-            let point = map(*point);
+        for pad in &item.pads {
+            let point = map(pad.point);
             writeln!(
                 svg,
                 r##"<circle cx="{}" cy="{}" r="4" fill="#fbbf24" stroke="#111827"/>"##,
@@ -735,4 +772,31 @@ mod tests {
             0.2,
         ));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn routing_cannot_escape_the_board_to_bypass_an_obstacle() {
+    let config = PcbConfig {
+        width: 10.0,
+        height: 10.0,
+        layers: 2,
+        min_trace_width: 0.25,
+        clearance: 0.2,
+    };
+    let obstacle = Hitbox {
+        left: -1.0,
+        right: 1.0,
+        bottom: -5.0,
+        top: 5.0,
+    };
+    assert!(
+        route_between(
+            Point { x: -3.0, y: 0.0 },
+            Point { x: 3.0, y: 0.0 },
+            &[obstacle],
+            &config
+        )
+        .is_none()
+    );
 }
