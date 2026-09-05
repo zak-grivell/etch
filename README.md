@@ -1,4 +1,4 @@
-A rust based language for circuit design, simulation, and testing
+A Rust-based language for circuit design, simulation, and testing
 
 ## Architecture
 
@@ -17,7 +17,7 @@ The compiler and output backends communicate through the renderer-independent
 Output crates do not depend on the evaluator, and the evaluator does not depend
 on an output format or renderer.
 
-lots of realy smart things have been developed in the software world like automated testing, mocking and functions. What if we could apply these concepts to circuit design? this is the motivation behind etch.
+Etch brings functions, simulation, and automated testing to circuit design.
 
 Example
 ```etch
@@ -45,13 +45,6 @@ test(name: "equal resistors divide voltage in half", body: () -> {
 render(component: { input: upper.a, output: upper.b, ground: lower.b })
 ```
 
-
-I want to investigate pipes for when small values tho
-
-CURRENT PLAN:
-- Parser: Code -> AST
-- Compiler: AST -> Node Structure
-- Simulator: Simulates Node Structures
 
 ## CLI
 
@@ -133,3 +126,81 @@ render(component: { input: upper.a, output: upper.b, ground })
 
 Bare file-level expressions are ordinary evaluated values and do not implicitly
 become the render root.
+
+## Checking, types, and simulation
+
+`check` resolves and type-checks reachable imports without executing assertions,
+simulations, or other top-level expressions. Source-read failures and compiler
+messages include the affected file and byte span. Import paths normalize `.` and
+`..` relative to the main file's directory.
+
+Numeric literals retain unit labels (`2mV + 3mV` produces `0.005 V`). Named aliases
+support numeric, object, array, tuple, optional, union, and function types. Object
+arguments may contain additional fields; array literals are checked positionally
+against tuples or element-by-element against array types. Optional types accept
+the inner type or a no-value result. Scalars remain accepted by numeric unit
+parameters for compatibility with existing component constructors.
+
+Strings support `\"`, `\\`, `\n`, `\r`, `\t`, and `\0`. Unknown escapes are errors.
+
+Simulation solves each linearized circuit with pivoting and checks voltage
+convergence with absolute tolerance `1e-9` plus relative tolerance `1e-7`.
+Nonlinear models have a limit of 128 iterations per step. Active floating or
+ill-conditioned nets, invalid equations, and non-convergence return errors.
+Nodes absent from all equations retain their prior voltage. Capacitor and
+inductor models use backward-Euler companion equations. A failed `simulate` call
+restores the complete state from before that call, including earlier steps in
+the same call.
+
+For Rust consumers, `Circuit::voltage` and `NodeValue::connections` now return
+`Result`. Nodes from another circuit are rejected. Closures capture immutable
+scope snapshots with explicit recursive bindings; internal circuit handles are
+weak, while externally returned nodes keep their circuit alive.
+
+## KiCad libraries and validation
+
+PCB placement and routing use the installed footprint's physical pad positions,
+sizes, and courtyard/body bounds. Export retains native pad shapes, drills,
+layers, and footprint graphics. Set `KICAD_FOOTPRINT_DIR` and `KICAD_SYMBOL_DIR`
+when libraries are outside the standard KiCad installation paths. Missing
+footprints or mapped pads produce errors. SVG remains available for inspecting
+an incomplete route; KiCad PCB export rejects unrouted connections.
+
+References come from the symbol library and are assigned once for both exports.
+Symbol property inheritance is preserved. Schematic export supports common pins
+and unit 1 in the normal symbol style; mappings to other units/styles are rejected
+with an explanatory error instead of producing disconnected labels.
+
+Schematic wiring falls back to explicit net labels when a route would overlap
+another net or cannot be completed. Placement adjustments stay within sections.
+
+Run the regression checks in the Nix development environment:
+
+```sh
+nix develop --command cargo test --workspace
+nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+nix develop --command python3 scripts/verify-kicad.py
+nix develop --command scripts/verify-editor.sh
+```
+
+The KiCad check requires `kicad-cli` (or `KICAD_CLI`) and installed libraries. It
+checks exported schematic connectivity and DRC for a divider, an LED circuit,
+and a component with two ports sharing one node. DRC validates these fixtures
+using the installed KiCad rules; other boards still need their own project rules
+and validation.
+
+## Helix grammar
+
+The repository includes an Etch Tree-sitter grammar, generated parser, corpus,
+and highlighting/indent/text-object queries. From the repository root:
+
+```sh
+nix develop --command scripts/build-editor-grammar.sh
+HELIX_RUNTIME="$PWD/.helix/runtime" hx
+```
+
+The compiled grammar is a local build artifact. The verification script checks
+all examples and standard-library sources and compiles each editor query.
+
+See [CODEBASE_REVIEW.md](CODEBASE_REVIEW.md) for the review coverage and the
+follow-up evidence for all 18 findings.
