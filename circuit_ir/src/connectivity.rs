@@ -9,11 +9,19 @@ impl CircuitDesign {
     }
 
     pub fn connect(&mut self, a: NodeId, b: NodeId) {
+        self.add_node(a);
+        self.add_node(b);
         self.connections.entry(a).or_default().insert(b);
         self.connections.entry(b).or_default().insert(a);
     }
 
     pub fn add_component(&mut self, component: Component) {
+        for node in component.ports.values() {
+            self.add_node(*node);
+        }
+        if let Some(section) = &component.section {
+            self.add_section(section.clone());
+        }
         self.components.push(component);
     }
 
@@ -24,12 +32,40 @@ impl CircuitDesign {
     }
 
     pub fn add_net_label(&mut self, label: String, node: NodeId) -> Option<NodeId> {
+        self.add_node(node);
         let nodes = self.net_labels.entry(label).or_default();
         let existing = nodes.first().copied();
         if !nodes.contains(&node) {
             nodes.push(node);
         }
+        if let Some(previous) = existing {
+            self.connect(previous, node);
+        }
         existing
+    }
+
+    pub fn section_names(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        if self
+            .components
+            .iter()
+            .any(|component| component.section.is_none())
+        {
+            names.push("Circuit".into());
+        }
+        for name in self.sections.iter().chain(
+            self.components
+                .iter()
+                .filter_map(|component| component.section.as_ref()),
+        ) {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+        if names.is_empty() {
+            names.push("Circuit".into());
+        }
+        names
     }
 
     pub fn configure_pcb(&mut self, config: PcbConfig) {
@@ -73,5 +109,38 @@ impl CircuitDesign {
             names.entry(*root).or_insert_with(|| format!("Net-{root}"));
         }
         names
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn registers_connected_and_labelled_nodes() {
+        let mut design = CircuitDesign::default();
+        design.connect(1, 2);
+        design.add_net_label("signal".into(), 2);
+        design.add_net_label("signal".into(), 3);
+        assert_eq!(
+            design.electrical_roots(),
+            BTreeMap::from([(1, 1), (2, 1), (3, 1)])
+        );
+    }
+    #[test]
+    fn derives_unique_sections_from_components() {
+        let mut design = CircuitDesign::default();
+        for section in [None, Some("Circuit".into()), Some("Other".into())] {
+            design.add_component(Component {
+                kind: "test".into(),
+                label: None,
+                value: None,
+                ports: BTreeMap::from([("pin".into(), 7)]),
+                section,
+                svg: None,
+                kicad: None,
+            });
+        }
+        assert_eq!(design.section_names(), vec!["Circuit", "Other"]);
+        assert!(design.nodes.contains(&7));
     }
 }

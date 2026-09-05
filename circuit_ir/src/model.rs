@@ -38,3 +38,31 @@ pub struct PcbConfig {
     pub min_trace_width: f64,
     pub clearance: f64,
 }
+
+impl PcbConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if ![
+            self.width,
+            self.height,
+            self.min_trace_width,
+            self.clearance,
+        ]
+        .iter()
+        .all(|v| v.is_finite())
+            || self.width <= 0.0
+            || self.height <= 0.0
+            || self.min_trace_width <= 0.0
+            || self.clearance < 0.0
+            || !(1..=16).contains(&self.layers)
+        {
+            return Err("PCB dimensions and trace width must be positive and finite, clearance nonnegative and finite, and layers between 1 and 16".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TraceSeries {
+    pub name: String,
+    pub samples: Vec<(f64, f64)>,
+}
