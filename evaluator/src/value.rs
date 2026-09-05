@@ -5,6 +5,7 @@ pub struct LambdaValue {
     pub(super) params: BTreeMap<Option<Symbol>, ast::Type<PartialMetadata>>,
     pub(super) body: Box<AstNode<Expression<PartialMetadata>, PartialMetadata>>,
     pub(super) scope: Scope,
+    pub(super) recursive: Option<Symbol>,
 }
 
 impl fmt::Debug for LambdaValue {
@@ -32,7 +33,7 @@ pub enum Value {
 #[derive(Clone, Debug)]
 pub struct NativeFunction {
     pub(super) kind: NativeFunctionKind,
-    pub(super) circuit: Circuit,
+    pub(super) circuit: super::circuit::CircuitRef,
 }
 
 #[derive(Clone, Debug)]
@@ -67,9 +68,6 @@ impl PartialEq for Value {
         match (self, other) {
             (Self::Number(a), Self::Number(b)) => a == b,
             (Self::Quantity(a, a_unit), Self::Quantity(b, b_unit)) => a == b && a_unit == b_unit,
-            (Self::Number(a), Self::Quantity(b, _)) | (Self::Quantity(a, _), Self::Number(b)) => {
-                a == b
-            }
             (Self::String(a), Self::String(b)) => a == b,
             (Self::Boolean(a), Self::Boolean(b)) => a == b,
             (Self::Array(a), Self::Array(b)) => a == b,
@@ -90,13 +88,25 @@ pub struct EvaluationError {
 pub trait SourceProvider {
     fn main_file(&self) -> &str;
     fn get_file(&self, name: &str) -> Option<&str>;
+    fn read_file(&self, name: &str) -> Result<String, RunError> {
+        self.get_file(name)
+            .map(str::to_owned)
+            .ok_or_else(|| RunError::FileNotFound(name.into()))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RunError {
     FileNotFound(String),
+    Io {
+        file: String,
+        message: String,
+    },
     ImportCycle(Vec<String>),
-    Compilation { file: String, error_count: usize },
+    Compilation {
+        file: String,
+        diagnostics: Vec<parser::CompileDiagnostic>,
+    },
     Evaluation(EvaluationError),
 }
 
@@ -141,11 +151,7 @@ pub struct DisplayOutput {
     pub traces: Vec<TraceSeries>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct TraceSeries {
-    pub name: String,
-    pub samples: Vec<(f64, f64)>,
-}
+pub use circuit_ir::TraceSeries;
 
 impl From<EvaluationError> for RunError {
     fn from(error: EvaluationError) -> Self {
@@ -179,4 +185,57 @@ impl Scope {
 pub(super) enum Flow {
     Continue(Value),
     Return(Value),
+}
+
+impl fmt::Display for RunError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::FileNotFound(file) => write!(f, "source file not found: {file}"),
+            Self::Io { file, message } => write!(f, "{file}: {message}"),
+            Self::ImportCycle(files) => write!(f, "import cycle: {}", files.join(" -> ")),
+            Self::Compilation { file, diagnostics } => {
+                for diagnostic in diagnostics {
+                    writeln!(
+                        f,
+                        "{file}:{}..{}: {}: {}",
+                        diagnostic.span.start,
+                        diagnostic.span.end,
+                        diagnostic.stage,
+                        diagnostic.message
+                    )?;
+                }
+                Ok(())
+            }
+            Self::Evaluation(error) => write!(
+                f,
+                "{}..{}: {}",
+                error.span.start, error.span.end, error.message
+            ),
+        }
+    }
+}
+impl std::error::Error for RunError {}
+
+impl Value {
+    pub(super) fn retain_circuit(self, circuit: &Circuit) -> Self {
+        match self {
+            Self::Node(mut node) => {
+                node.owner = Some(circuit.clone());
+                Self::Node(node)
+            }
+            Self::Array(items) => Self::Array(
+                items
+                    .into_iter()
+                    .map(|item| item.retain_circuit(circuit))
+                    .collect(),
+            ),
+            Self::Object(fields) => Self::Object(
+                fields
+                    .into_iter()
+                    .map(|(key, value)| (key, value.retain_circuit(circuit)))
+                    .collect(),
+            ),
+            other => other,
+        }
+    }
 }

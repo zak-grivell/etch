@@ -156,16 +156,39 @@ impl AstTransform for SymbolResolver {
     type From = ParsedNode;
     type To = SymbolNode;
 
+    fn transform_named(
+        &mut self,
+        n: AstNode<NamedType, Self::From>,
+    ) -> Results<AstNode<Type<Self::To>, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner: Type::Named(n.inner),
+            meta: n.meta,
+        })
+    }
+    fn transform_quantity(
+        &mut self,
+        n: AstNode<Quantity, Self::From>,
+    ) -> Results<AstNode<Quantity, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            inner: n.inner,
+            meta: n.meta,
+        })
+    }
     fn transform_definition(
         &mut self,
         AstNode { inner, meta }: AstNode<Definition<Self::From>, Self::From>,
     ) -> Results<AstNode<Definition<Self::To>, Self::To>, Self::Error> {
-        self.binding_pattern(inner.lhs)
-            .zip(self.transform_expression(inner.rhs))
-            .map(|(lhs, rhs)| AstNode {
-                inner: Definition { lhs, rhs },
-                meta,
-            })
+        let (lhs, rhs) = if matches!(&inner.rhs.inner, Expression::Lambda(_)) {
+            let lhs = self.binding_pattern(inner.lhs);
+            (lhs, self.transform_expression(inner.rhs))
+        } else {
+            let rhs = self.transform_expression(inner.rhs);
+            (self.binding_pattern(inner.lhs), rhs)
+        };
+        lhs.zip(rhs).map(|(lhs, rhs)| AstNode {
+            inner: Definition { lhs, rhs },
+            meta,
+        })
     }
 
     fn transform_type_definition(
@@ -515,6 +538,7 @@ impl AstTransform for SymbolResolver {
         &mut self,
         AstNode { inner, meta }: AstNode<LambdaType<Self::From>, Self::From>,
     ) -> Results<AstNode<LambdaType<Self::To>, Self::To>, Self::Error> {
+        self.scopes.push(BTreeMap::new());
         let params = inner
             .params
             .into_iter()
@@ -523,15 +547,15 @@ impl AstTransform for SymbolResolver {
                     .map(|ty| (Some(self.declare(name)), ty))
             })
             .collect::<Results<BTreeMap<_, _>, _>>();
-        params
-            .zip(self.transform_type(*inner.rtn))
-            .map(|(params, rtn)| AstNode {
-                inner: LambdaType {
-                    params,
-                    rtn: Box::new(rtn),
-                },
-                meta,
-            })
+        let rtn = self.transform_type(*inner.rtn);
+        self.scopes.pop();
+        params.zip(rtn).map(|(params, rtn)| AstNode {
+            inner: LambdaType {
+                params,
+                rtn: Box::new(rtn),
+            },
+            meta,
+        })
     }
     fn transform_type_union(
         &mut self,

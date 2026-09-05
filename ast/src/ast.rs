@@ -1,6 +1,7 @@
 use crate::{
-    Array, ArrayType, BooleanType, Definition, LambdaType, NeverType, NodeType, NoneType,
-    NumberType, ObjectType, OptionalType, Return, StringType, TupleType, Type, UnionType,
+    Array, ArrayType, BooleanType, Definition, LambdaType, NamedType, NeverType, NodeType,
+    NoneType, NumberType, ObjectType, OptionalType, Quantity, Return, StringType, TupleType, Type,
+    UnionType,
     expression::*,
     pattern::{ArrayDestructure, EnumDestructure, ObjectDestructure, Pattern},
     primative::Primative,
@@ -18,7 +19,7 @@ pub trait Ast: Debug + Clone + PartialEq {
     type Type: Clone + Debug + PartialEq;
     type Statement: Clone + Debug + PartialEq;
 
-    type Ident: Clone + Debug + PartialEq + PartialEq + Eq + PartialOrd + Ord;
+    type Ident: Clone + Debug + Ord;
     type U: Clone + Debug + PartialEq;
     type B: Clone + Debug + PartialEq;
 
@@ -282,7 +283,10 @@ where
 
 impl<A: AstTraverse> Transform<Primative, Primative> for A
 where
-    A: Transform<bool, bool> + Transform<f64, f64> + Transform<String, String>,
+    A: Transform<bool, bool>
+        + Transform<f64, f64>
+        + Transform<String, String>
+        + Transform<Quantity, Quantity>,
 {
     fn transform(
         &mut self,
@@ -290,6 +294,7 @@ where
     ) -> Results<AstNode<Primative, Self::To>, A::Error> {
         match inner {
             Primative::Boolean(x) => self.dispatch(meta, x, Primative::Boolean),
+            Primative::Quantity(x) => self.dispatch(meta, x, Primative::Quantity),
             Primative::Number(x) => self.dispatch(meta, x, Primative::Number),
             Primative::String(x) => self.dispatch(meta, x, Primative::String),
         }
@@ -366,7 +371,8 @@ where
 
 impl<A: AstTraverse> Transform<Type<<A as AstTransform>::From>, Type<<A as AstTransform>::To>> for A
 where
-    A: Transform<NodeType, NodeType>
+    A: Transform<NamedType, Type<<A as AstTransform>::To>>
+        + Transform<NodeType, NodeType>
         + Transform<StringType, StringType>
         + Transform<NumberType, NumberType>
         + Transform<BooleanType, BooleanType>
@@ -384,6 +390,7 @@ where
         AstNode { inner, meta }: AstNode<Type<Self::From>, Self::From>,
     ) -> Results<AstNode<Type<Self::To>, Self::To>, A::Error> {
         match inner {
+            Type::Named(x) => self.dispatch(meta, x, |resolved| resolved),
             Type::Node(x) => self.dispatch(meta, x, Type::Node),
             Type::String(x) => self.dispatch(meta, x, Type::String),
             Type::Number(x) => self.dispatch(meta, x, Type::Number),

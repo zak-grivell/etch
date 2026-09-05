@@ -57,7 +57,27 @@ impl fmt::Debug for Circuit {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct CircuitRef(std::rc::Weak<RefCell<CircuitState>>);
+impl CircuitRef {
+    pub(super) fn upgrade(&self) -> Result<Circuit, EvaluationError> {
+        self.0
+            .upgrade()
+            .map(|inner| Circuit { inner })
+            .ok_or_else(|| EvaluationError {
+                span: Span::default(),
+                message: "the node's circuit has been released".into(),
+            })
+    }
+    pub(super) fn belongs_to(&self, circuit: &Circuit) -> bool {
+        self.0.ptr_eq(&Rc::downgrade(&circuit.inner))
+    }
+}
+
 impl Circuit {
+    pub(super) fn downgrade(&self) -> CircuitRef {
+        CircuitRef(Rc::downgrade(&self.inner))
+    }
     pub(super) fn node(&self) -> NodeValue {
         let mut inner = self.inner.borrow_mut();
         inner.next_node_id += 1;
@@ -66,7 +86,8 @@ impl Circuit {
         inner.design.add_node(id);
         NodeValue {
             id,
-            circuit: self.clone(),
+            circuit: self.downgrade(),
+            owner: None,
         }
     }
 
@@ -74,7 +95,8 @@ impl Circuit {
         if let Some(id) = self.inner.borrow().ground_node_id {
             return NodeValue {
                 id,
-                circuit: self.clone(),
+                circuit: self.downgrade(),
+                owner: None,
             };
         }
 
@@ -110,13 +132,22 @@ impl Circuit {
         self.inner.borrow().hooks.len()
     }
 
-    pub fn voltage(&self, node: &NodeValue) -> f64 {
+    pub fn voltage(&self, node: &NodeValue) -> Result<f64, EvaluationError> {
+        if !node.circuit.belongs_to(self) {
+            return Err(EvaluationError {
+                span: Span::default(),
+                message: "node belongs to another circuit".into(),
+            });
+        }
         self.inner
             .borrow()
             .voltages
             .get(&node.id)
             .copied()
-            .unwrap_or(0.0)
+            .ok_or_else(|| EvaluationError {
+                span: Span::default(),
+                message: "node is no longer present in this circuit".into(),
+            })
     }
 
     pub fn node_voltages(&self) -> Vec<(u64, f64)> {
@@ -137,7 +168,11 @@ impl Circuit {
     }
 
     pub fn rendered_component(&self) -> Option<Value> {
-        self.inner.borrow().rendered_component.clone()
+        self.inner
+            .borrow()
+            .rendered_component
+            .clone()
+            .map(|value| value.retain_circuit(self))
     }
 
     pub fn run_tests(&self) -> Vec<TestResult> {
@@ -218,12 +253,29 @@ impl Circuit {
     }
 
     pub fn simulate(&self, steps: usize, delta_time: f64) -> Result<(), EvaluationError> {
+        if !delta_time.is_finite() || delta_time <= 0.0 {
+            return Err(EvaluationError {
+                span: Span::default(),
+                message: "simulation delta time must be positive and finite".into(),
+            });
+        }
+        let baseline = self.inner.borrow().clone();
+        let result = self.simulate_steps(steps, delta_time);
+        if result.is_err() {
+            *self.inner.borrow_mut() = baseline;
+        }
+        result
+    }
+
+    fn simulate_steps(&self, steps: usize, delta_time: f64) -> Result<(), EvaluationError> {
         for _ in 0..steps {
             {
                 let mut inner = self.inner.borrow_mut();
                 inner.delta_time = delta_time;
             }
-            for _ in 0..16 {
+            let mut converged = false;
+            for _ in 0..128 {
+                let previous = self.inner.borrow().voltages.clone();
                 let hooks = {
                     let mut inner = self.inner.borrow_mut();
                     inner.conductances.clear();
@@ -238,9 +290,31 @@ impl Circuit {
                 for hook in hooks {
                     Evaluator::new(self.clone()).call(hook, BTreeMap::new(), Span::default())?;
                 }
-                self.solve_iteration();
+                self.solve_iteration()?;
+                converged = self.inner.borrow().voltages.iter().all(|(node, value)| {
+                    let Some(old) = previous.get(node).copied() else {
+                        return false;
+                    };
+                    (value - old).abs() <= 1e-9 + 1e-7 * value.abs().max(old.abs())
+                });
+                if converged {
+                    break;
+                }
             }
-            self.inner.borrow_mut().time += delta_time;
+            if !converged {
+                return Err(EvaluationError {
+                    span: Span::default(),
+                    message: "simulation did not converge within 128 iterations".into(),
+                });
+            }
+            let next_time = self.time() + delta_time;
+            if !next_time.is_finite() {
+                return Err(EvaluationError {
+                    span: Span::default(),
+                    message: "simulation time overflow".into(),
+                });
+            }
+            self.inner.borrow_mut().time = next_time;
             let mut inner = self.inner.borrow_mut();
             for state in inner.states.values_mut() {
                 if let Some(value) = state.pending.take() {
@@ -251,76 +325,155 @@ impl Circuit {
         Ok(())
     }
 
-    fn solve_iteration(&self) {
+    pub(super) fn solve_iteration(&self) -> Result<(), EvaluationError> {
         let mut inner = self.inner.borrow_mut();
-        let ids = inner.voltages.keys().copied().collect::<Vec<_>>();
-        let mut visited = BTreeSet::new();
-        let mut components = Vec::new();
-        for root in ids {
-            if !visited.insert(root) {
+        let roots = inner.design.electrical_roots();
+        let error = |message: &str| EvaluationError {
+            span: Span::default(),
+            message: message.into(),
+        };
+        let root = |id: &u64| {
+            roots
+                .get(id)
+                .copied()
+                .ok_or_else(|| error("equation references an unknown node"))
+        };
+        let mut fixed = BTreeMap::new();
+        let mut active = BTreeSet::new();
+        for (node, voltage) in &inner.fixed {
+            if !voltage.is_finite() {
+                return Err(error("non-finite fixed voltage"));
+            }
+            let node = root(node)?;
+            if fixed
+                .insert(node, *voltage)
+                .is_some_and(|old| old != *voltage)
+            {
+                return Err(error("connected nodes have conflicting fixed voltages"));
+            }
+        }
+        for (a, b, value) in &inner.conductances {
+            if !value.is_finite() || *value < 0.0 {
+                return Err(error("conductance must be finite and nonnegative"));
+            }
+            if *value > 0.0 {
+                active.extend([root(a)?, root(b)?]);
+            }
+        }
+        for (a, b, value) in &inner.currents {
+            if !value.is_finite() {
+                return Err(error("current must be finite"));
+            }
+            active.extend([root(a)?, root(b)?]);
+        }
+        for (node, target, g) in &inner.voltage_drives {
+            if !target.is_finite() || !g.is_finite() || *g <= 0.0 {
+                return Err(error(
+                    "voltage drive target must be finite and conductance positive and finite",
+                ));
+            }
+            active.insert(root(node)?);
+        }
+        let unknowns: BTreeMap<_, _> = active
+            .into_iter()
+            .filter(|node| !fixed.contains_key(node))
+            .enumerate()
+            .map(|(index, node)| (node, index))
+            .collect();
+        let n = unknowns.len();
+        let mut matrix = vec![vec![0.0; n + 1]; n];
+        for (a, b, g) in &inner.conductances {
+            let (a, b) = (root(a)?, root(b)?);
+            if a == b || *g == 0.0 {
                 continue;
             }
-            let mut stack = vec![root];
-            let mut component = Vec::new();
-            while let Some(node) = stack.pop() {
-                component.push(node);
-                for next in inner.design.connections.get(&node).into_iter().flatten() {
-                    if visited.insert(*next) {
-                        stack.push(*next);
+            for (node, other) in [(a, b), (b, a)] {
+                if let Some(&i) = unknowns.get(&node) {
+                    matrix[i][i] += g;
+                    if let Some(&j) = unknowns.get(&other) {
+                        matrix[i][j] -= g;
+                    } else if let Some(value) = fixed.get(&other) {
+                        matrix[i][n] += g * value;
                     }
                 }
             }
-            components.push(component);
         }
-
-        let old = inner.voltages.clone();
-        for component in components {
-            if let Some(voltage) = component.iter().find_map(|id| inner.fixed.get(id).copied()) {
-                for id in component {
-                    inner.voltages.insert(id, voltage);
-                }
-                continue;
+        for (a, b, current) in &inner.currents {
+            if let Some(&i) = unknowns.get(&root(a)?) {
+                matrix[i][n] -= current;
             }
-            let members = component.iter().copied().collect::<BTreeSet<_>>();
-            let mut numerator = 0.0;
-            let mut denominator = 0.0;
-            for (a, b, conductance) in &inner.conductances {
-                if members.contains(a) && !members.contains(b) {
-                    numerator += old.get(b).copied().unwrap_or(0.0) * conductance;
-                    denominator += conductance;
-                } else if members.contains(b) && !members.contains(a) {
-                    numerator += old.get(a).copied().unwrap_or(0.0) * conductance;
-                    denominator += conductance;
-                }
+            if let Some(&i) = unknowns.get(&root(b)?) {
+                matrix[i][n] += current;
             }
-            for (from, to, current) in &inner.currents {
-                if members.contains(from) {
-                    numerator -= current;
-                }
-                if members.contains(to) {
-                    numerator += current;
-                }
+        }
+        for (node, target, g) in &inner.voltage_drives {
+            if let Some(&i) = unknowns.get(&root(node)?) {
+                matrix[i][i] += g;
+                matrix[i][n] += target * g;
             }
-            for (node, target, conductance) in &inner.voltage_drives {
-                if members.contains(node) {
-                    numerator += target * conductance;
-                    denominator += conductance;
-                }
+        }
+        for row in &mut matrix {
+            let scale = row[..n].iter().copied().map(f64::abs).fold(0.0, f64::max);
+            if scale == 0.0 {
+                return Err(error("floating net: no voltage reference"));
             }
-            if denominator > 0.0 {
-                let voltage = numerator / denominator;
-                for id in component {
-                    inner.voltages.insert(id, voltage);
+            for value in row {
+                *value /= scale;
+                if !value.is_finite() {
+                    return Err(error("non-finite circuit equation"));
                 }
             }
         }
+        for column in 0..n {
+            let pivot = (column..n)
+                .max_by(|a, b| {
+                    matrix[*a][column]
+                        .abs()
+                        .total_cmp(&matrix[*b][column].abs())
+                })
+                .unwrap();
+            if matrix[pivot][column].abs() < 1e-12 {
+                return Err(error(
+                    "floating or ill-conditioned circuit: no unique voltage solution",
+                ));
+            }
+            matrix.swap(column, pivot);
+            let divisor = matrix[column][column];
+            for value in &mut matrix[column][column..=n] {
+                *value /= divisor;
+            }
+            let pivot_row = matrix[column].clone();
+            for (row_index, row) in matrix.iter_mut().enumerate() {
+                if row_index == column {
+                    continue;
+                }
+                let factor = row[column];
+                for (value, pivot) in row[column..=n].iter_mut().zip(&pivot_row[column..=n]) {
+                    *value -= factor * pivot;
+                }
+            }
+        }
+        for (node, index) in unknowns {
+            let value = matrix[index][n];
+            if !value.is_finite() {
+                return Err(error("non-finite voltage solution"));
+            }
+            fixed.insert(node, value);
+        }
+        for (node, voltage) in &mut inner.voltages {
+            if let Some(value) = fixed.get(&root(node)?) {
+                *voltage = *value;
+            }
+        }
+        Ok(())
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct NodeValue {
     pub(super) id: u64,
-    pub(super) circuit: Circuit,
+    pub(super) circuit: CircuitRef,
+    pub(super) owner: Option<Circuit>,
 }
 
 impl NodeValue {
@@ -328,24 +481,29 @@ impl NodeValue {
         self.id
     }
 
-    pub fn connections(&self) -> BTreeSet<u64> {
-        self.circuit
+    pub fn connections(&self) -> Result<BTreeSet<u64>, EvaluationError> {
+        Ok(self
+            .circuit
+            .upgrade()?
             .inner
             .borrow()
             .design
             .connections
             .get(&self.id)
             .cloned()
-            .unwrap_or_default()
+            .unwrap_or_default())
     }
-
-    pub(super) fn connect(&self, other: &Self) {
-        self.circuit.connect(self.id, other.id);
+    pub(super) fn connect(&self, other: &Self) -> Result<(), EvaluationError> {
+        let circuit = self.circuit.upgrade()?;
+        circuit.voltage(self)?;
+        circuit.voltage(other)?;
+        circuit.connect(self.id, other.id);
+        Ok(())
     }
 }
 
 impl PartialEq for NodeValue {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.id == other.id && self.circuit.0.ptr_eq(&other.circuit.0)
     }
 }

@@ -10,7 +10,7 @@ pub enum Token<'src> {
         prefix: Option<Prefix>,
         unit: Option<&'src str>,
     },
-    Str(&'src str),
+    Str(String),
 
     Symbol(Symbols),
     Identifier(&'src str),
@@ -159,7 +159,11 @@ impl fmt::Display for Token<'_> {
                 prefix,
                 unit,
             } => {
-                write!(f, "{value}")?;
+                write!(
+                    f,
+                    "{}",
+                    value / prefix.as_ref().map_or(1.0, Prefix::multiplier)
+                )?;
                 if let Some(prefix) = prefix {
                     write!(f, "{prefix}")?;
                 }
@@ -199,9 +203,18 @@ pub fn lexer<'src>()
         })
         .labelled("Number");
 
-    let string = just('"')
-        .ignore_then(none_of('"').repeated().to_slice())
-        .then_ignore(just('"'))
+    let escape = just('\\').ignore_then(choice((
+        just('"').to('"'),
+        just('\\').to('\\'),
+        just('n').to('\n'),
+        just('r').to('\r'),
+        just('t').to('\t'),
+        just('0').to('\0'),
+    )));
+    let string = choice((escape, none_of("\\\"")))
+        .repeated()
+        .collect::<String>()
+        .delimited_by(just('"'), just('"'))
         .map(Token::Str)
         .labelled("String");
 

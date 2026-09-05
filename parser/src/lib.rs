@@ -3,7 +3,6 @@ pub mod parser;
 #[macro_use]
 pub(crate) mod lexer;
 
-pub(crate) mod cleaner;
 pub(crate) mod resolver;
 pub(crate) mod semantic;
 
@@ -85,7 +84,14 @@ impl<'src> CompileErrors<'src> {
 
 pub type ParsedProgram = AstNode<Program<parser::ParsedNode>, parser::ParsedNode>;
 
-pub fn compile<'a>(input: &'a str) -> Result<Vec<TypedProgram>, Vec<CompileErrors<'a>>> {
+pub fn compile(input: &str) -> Result<Vec<TypedProgram>, Vec<CompileErrors<'_>>> {
+    compile_with_imports(input, Default::default())
+}
+
+pub fn compile_with_imports<'a>(
+    input: &'a str,
+    imports: std::collections::BTreeMap<String, ValueType>,
+) -> Result<Vec<TypedProgram>, Vec<CompileErrors<'a>>> {
     let (tokens, errors) = lexer::lexer().parse(input).into_output_errors();
 
     let lexer_errors: Vec<_> = errors.into_iter().map(CompileErrors::LexerError).collect();
@@ -126,7 +132,9 @@ pub fn compile<'a>(input: &'a str) -> Result<Vec<TypedProgram>, Vec<CompileError
         return Err(resolver_errors);
     }
 
-    let (typed, semantic_errors) = TypeResolver::new().transform_all(resolved).into_parts();
+    let (typed, semantic_errors) = TypeResolver::with_imports(imports)
+        .transform_all(resolved)
+        .into_parts();
     let semantic_errors = semantic_errors
         .into_iter()
         .map(CompileErrors::SemanticError)
@@ -135,12 +143,7 @@ pub fn compile<'a>(input: &'a str) -> Result<Vec<TypedProgram>, Vec<CompileError
         return Err(semantic_errors);
     }
 
-    let (cleaned, cleaner_errors) = cleaner::ExpressionStripper
-        .transform_all(typed)
-        .into_parts();
-    debug_assert!(cleaner_errors.is_empty());
-
-    Ok(cleaned)
+    Ok(typed)
 }
 
 pub fn print_errors(filename: &str, src: &str, errors: Vec<CompileErrors>) {

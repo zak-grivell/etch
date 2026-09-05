@@ -7,6 +7,7 @@ impl Evaluator {
         mut args: BTreeMap<String, Value>,
         span: Span,
     ) -> Result<Value, EvaluationError> {
+        let circuit_handle = function.circuit.upgrade()?;
         if matches!(
             function.kind,
             NativeFunctionKind::Hook
@@ -23,7 +24,10 @@ impl Evaluator {
 
         let missing = |name: &str| self.error(span, format!("missing argument `{name}`"));
         let node = |value: Option<Value>, name: &str| match value {
-            Some(Value::Node(node)) => Ok(node),
+            Some(Value::Node(node)) => {
+                circuit_handle.voltage(&node)?;
+                Ok(node)
+            }
             Some(_) => Err(self.error(span, format!("argument `{name}` must be a node"))),
             None => Err(missing(name)),
         };
@@ -43,7 +47,7 @@ impl Evaluator {
                     return Err(self.error(span, "render argument `component` must be an object"));
                 }
                 self.ensure_no_args(&args, span)?;
-                let mut circuit = function.circuit.inner.borrow_mut();
+                let mut circuit = circuit_handle.inner.borrow_mut();
                 if circuit.rendered_component.is_some() {
                     return Err(
                         self.error(span, "a component has already been registered to render")
@@ -60,18 +64,19 @@ impl Evaluator {
                     return Err(missing("nodes"));
                 };
                 self.ensure_nodes(&nodes, span)?;
-                function.circuit.inner.borrow_mut().hooks.push(simulate);
+                self.ensure_no_args(&args, span)?;
+                circuit_handle.inner.borrow_mut().hooks.push(simulate);
                 Ok(Value::None)
             }
             NativeFunctionKind::UseNode => {
                 self.ensure_no_args(&args, span)?;
-                Ok(Value::Node(function.circuit.node()))
+                Ok(Value::Node(circuit_handle.node()))
             }
             NativeFunctionKind::UseState => {
                 let initial = args.remove("initial").ok_or_else(|| missing("initial"))?;
                 self.ensure_no_args(&args, span)?;
                 let id = {
-                    let mut circuit = function.circuit.inner.borrow_mut();
+                    let mut circuit = circuit_handle.inner.borrow_mut();
                     circuit.next_state_id += 1;
                     let id = circuit.next_state_id;
                     circuit.states.insert(
@@ -88,14 +93,14 @@ impl Evaluator {
                         "get".into(),
                         Value::NativeFunction(NativeFunction {
                             kind: NativeFunctionKind::StateGet(id),
-                            circuit: function.circuit.clone(),
+                            circuit: circuit_handle.downgrade(),
                         }),
                     ),
                     (
                         "set".into(),
                         Value::NativeFunction(NativeFunction {
                             kind: NativeFunctionKind::StateSet(id),
-                            circuit: function.circuit,
+                            circuit: circuit_handle.downgrade(),
                         }),
                     ),
                 ])))
@@ -107,12 +112,13 @@ impl Evaluator {
                     );
                 };
                 self.ensure_no_args(&args, span)?;
-                function.circuit.inner.borrow_mut().hooks.push(equation);
+                circuit_handle.inner.borrow_mut().hooks.push(equation);
                 Ok(Value::None)
             }
             NativeFunctionKind::Voltage => {
                 let node = node(args.remove("node"), "node")?;
-                Ok(Value::Number(function.circuit.voltage(&node)))
+                self.ensure_no_args(&args, span)?;
+                Ok(Value::Number(circuit_handle.voltage(&node)?))
             }
             NativeFunctionKind::Conductance => {
                 let between = args.remove("between").ok_or_else(|| missing("between"))?;
@@ -125,8 +131,8 @@ impl Evaluator {
                 let a = node(nodes.first().cloned(), "between[0]")?;
                 let b = node(nodes.get(1).cloned(), "between[1]")?;
                 let value = number(args.remove("value"), "value")?;
-                function
-                    .circuit
+                self.ensure_no_args(&args, span)?;
+                circuit_handle
                     .inner
                     .borrow_mut()
                     .conductances
@@ -152,8 +158,8 @@ impl Evaluator {
                     )
                 };
                 let value = number(args.remove("value"), "value")?;
-                function
-                    .circuit
+                self.ensure_no_args(&args, span)?;
+                circuit_handle
                     .inner
                     .borrow_mut()
                     .currents
@@ -163,24 +169,29 @@ impl Evaluator {
             NativeFunctionKind::FixVoltage => {
                 let node = node(args.remove("node"), "node")?;
                 let value = number(args.remove("value"), "value")?;
-                function
-                    .circuit
-                    .inner
-                    .borrow_mut()
-                    .fixed
-                    .insert(node.id, value);
+                self.ensure_no_args(&args, span)?;
+                let mut state = circuit_handle.inner.borrow_mut();
+                if !value.is_finite() || state.fixed.get(&node.id).is_some_and(|old| *old != value)
+                {
+                    return Err(EvaluationError {
+                        span,
+                        message: "conflicting or non-finite fixed voltage".into(),
+                    });
+                }
+                state.fixed.insert(node.id, value);
                 Ok(Value::None)
             }
             NativeFunctionKind::DriveVoltage => {
                 let node = node(args.remove("node"), "node")?;
                 let value = number(args.remove("value"), "value")?;
                 let conductance = number(args.remove("conductance"), "conductance")?;
+                self.ensure_no_args(&args, span)?;
                 if !conductance.is_finite() || conductance <= 0.0 {
                     return Err(
                         self.error(span, "argument `conductance` must be positive and finite")
                     );
                 }
-                function.circuit.inner.borrow_mut().voltage_drives.push((
+                circuit_handle.inner.borrow_mut().voltage_drives.push((
                     node.id,
                     value,
                     conductance,
@@ -189,16 +200,15 @@ impl Evaluator {
             }
             NativeFunctionKind::Time => {
                 self.ensure_no_args(&args, span)?;
-                Ok(Value::Number(function.circuit.inner.borrow().time))
+                Ok(Value::Number(circuit_handle.inner.borrow().time))
             }
             NativeFunctionKind::DeltaTime => {
                 self.ensure_no_args(&args, span)?;
-                Ok(Value::Number(function.circuit.inner.borrow().delta_time))
+                Ok(Value::Number(circuit_handle.inner.borrow().delta_time))
             }
             NativeFunctionKind::StateGet(id) => {
                 self.ensure_no_args(&args, span)?;
-                function
-                    .circuit
+                circuit_handle
                     .inner
                     .borrow()
                     .states
@@ -209,7 +219,7 @@ impl Evaluator {
             NativeFunctionKind::StateSet(id) => {
                 let value = args.remove("value").ok_or_else(|| missing("value"))?;
                 self.ensure_no_args(&args, span)?;
-                let mut circuit = function.circuit.inner.borrow_mut();
+                let mut circuit = circuit_handle.inner.borrow_mut();
                 let state = circuit
                     .states
                     .get_mut(&id)
@@ -233,7 +243,7 @@ impl Evaluator {
                     None => return Err(missing("body")),
                 };
                 self.ensure_no_args(&args, span)?;
-                let mut circuit = function.circuit.inner.borrow_mut();
+                let mut circuit = circuit_handle.inner.borrow_mut();
                 if circuit.tests.iter().any(|test| test.name == name) {
                     return Err(self.error(span, format!("duplicate test name `{name}`")));
                 }
@@ -293,7 +303,11 @@ impl Evaluator {
                 let steps = number(args.remove("steps"), "steps")?;
                 let delta_time = number(args.remove("delta_time"), "delta_time")?;
                 self.ensure_no_args(&args, span)?;
-                if !steps.is_finite() || steps < 0.0 || steps.fract() != 0.0 {
+                if !steps.is_finite()
+                    || steps < 0.0
+                    || steps >= usize::MAX as f64
+                    || steps.fract() != 0.0
+                {
                     return Err(self.error(
                         span,
                         "simulate argument `steps` must be a non-negative integer",
@@ -305,7 +319,7 @@ impl Evaluator {
                         "simulate argument `delta_time` must be positive and finite",
                     ));
                 }
-                function.circuit.simulate(steps as usize, delta_time)?;
+                circuit_handle.simulate(steps as usize, delta_time)?;
                 Ok(Value::None)
             }
             NativeFunctionKind::UseSymbol => {
@@ -328,7 +342,7 @@ impl Evaluator {
                 let mut resolved_ports = BTreeMap::new();
                 for (name, value) in ports {
                     let port = node(Some(value), &format!("ports.{name}"))?;
-                    if !Rc::ptr_eq(&port.circuit.inner, &function.circuit.inner) {
+                    if !port.circuit.belongs_to(&circuit_handle) {
                         return Err(self.error(span, "symbol port belongs to another circuit"));
                     }
                     resolved_ports.insert(name, port.id);
@@ -388,7 +402,7 @@ impl Evaluator {
                     None => None,
                 };
                 self.ensure_no_args(&args, span)?;
-                let mut circuit = function.circuit.inner.borrow_mut();
+                let mut circuit = circuit_handle.inner.borrow_mut();
                 let section = circuit.current_section.clone();
                 circuit.design.add_component(Component {
                     kind,
@@ -418,12 +432,12 @@ impl Evaluator {
                 };
                 self.ensure_no_args(&args, span)?;
                 let previous = {
-                    let mut circuit = function.circuit.inner.borrow_mut();
+                    let mut circuit = circuit_handle.inner.borrow_mut();
                     circuit.design.add_section(name.clone());
                     circuit.current_section.replace(name)
                 };
                 let result = self.call(body, BTreeMap::new(), span);
-                function.circuit.inner.borrow_mut().current_section = previous;
+                circuit_handle.inner.borrow_mut().current_section = previous;
                 result
             }
             NativeFunctionKind::Net => {
@@ -436,14 +450,13 @@ impl Evaluator {
                 };
                 let node = node(args.remove("node"), "node")?;
                 self.ensure_no_args(&args, span)?;
-                let existing = function
-                    .circuit
+                let existing = circuit_handle
                     .inner
                     .borrow_mut()
                     .design
                     .add_net_label(label, node.id);
                 if let Some(existing) = existing {
-                    function.circuit.connect(existing, node.id);
+                    circuit_handle.connect(existing, node.id);
                 }
                 Ok(Value::Node(node))
             }
@@ -490,7 +503,7 @@ impl Evaluator {
                     traces.insert(name, trace);
                 }
                 self.ensure_no_args(&args, span)?;
-                let mut circuit = function.circuit.inner.borrow_mut();
+                let mut circuit = circuit_handle.inner.borrow_mut();
                 if circuit.displays.iter().any(|display| display.name == name) {
                     return Err(self.error(span, format!("duplicate display name `{name}`")));
                 }
@@ -532,8 +545,7 @@ impl Evaluator {
                     min_trace_width,
                     clearance,
                 };
-                function
-                    .circuit
+                circuit_handle
                     .inner
                     .borrow_mut()
                     .design

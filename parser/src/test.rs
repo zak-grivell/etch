@@ -106,3 +106,66 @@ fn parses_and_checks_comparisons() {
 fn supports_object_and_pattern_shorthand() {
     assert!(compile("let value = 1; let { value } = { value }").is_ok());
 }
+
+#[test]
+fn supports_interleaved_calls_and_field_access() {
+    assert!(
+        compile("let make = () -> { value: () -> { answer: 42 } }; make().value().answer").is_ok()
+    );
+}
+
+#[test]
+fn function_type_parameters_do_not_leak_into_values() {
+    assert!(compile("type Callback = (argument: Number) -> Number; argument").is_err());
+}
+
+#[test]
+fn object_merges_have_merged_field_types() {
+    assert!(compile("let merged = { a: 1 } | { b: true }; merged.a + 1").is_ok());
+    assert!(compile("1 | 2").is_err());
+}
+
+#[test]
+fn numeric_aliases_obey_block_scope() {
+    assert!(compile(r#"{ type Hidden = Number; 0 }; let f = (x: Hidden) -> x"#).is_err());
+}
+
+#[test]
+fn checks_match_bindings_and_early_return_types() {
+    assert!(compile("match 1 { let x -> x + true }").is_err());
+    assert!(compile("let f = () -> { return 1; true }; f() + 1").is_ok());
+}
+
+#[test]
+fn shadowing_initializers_resolve_the_previous_binding() {
+    assert!(compile("let x = 1; let x = x + 1; x").is_ok());
+    assert!(compile("let x = x + 1").is_err());
+}
+
+#[test]
+fn aliases_cover_structural_optional_union_and_function_types() {
+    for source in [
+        "type Item = { a: Number }; let f = (x: Item) -> x.a; f(x: { a: 2, extra: true })",
+        "type Choice = Number | Bool; let f = (x: Choice) -> x; f(x: true)",
+        "type Maybe = Number?; let f = (x: Maybe) -> x; f(x: 2)",
+        "type Items = [Number]; let f = (x: Items) -> x; f(x: [1,2])",
+        "type Callback = (a: Number) -> Number; let f = (x: Callback) -> x(a: 2); f(x: (a: Number) -> a + 1)",
+    ] {
+        assert!(compile(source).is_ok(), "{source}");
+    }
+    assert!(
+        compile("type Item = { a: Number }; let f = (x: Item) -> x; f(x: { a: true })").is_err()
+    );
+    assert!(compile("1V + 1A").is_err());
+    assert!(compile(r#""bad\q""#).is_err());
+}
+
+#[test]
+fn tuple_array_and_optional_assignability_is_structural() {
+    assert!(compile("type Pair = (Number, Bool); let f = (x: Pair) -> x; f(x: [1,true])").is_ok());
+    assert!(compile("type Pair = (Number, Bool); let f = (x: Pair) -> x; f(x: [true,1])").is_err());
+    assert!(compile("let f = (x: [Number]) -> x; f(x: [1,true])").is_err());
+    assert!(compile("let f = (x: [Number]) -> x; f(x: [])").is_ok());
+    assert!(compile("let f = (x: Number?) -> x; f(x: { let n = 1 })").is_ok());
+    assert!(compile("type Foo = Number; Foo").is_err());
+}

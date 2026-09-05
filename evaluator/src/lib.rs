@@ -25,6 +25,7 @@ use value::{Flow, NativeFunction, NativeFunctionKind, Scope};
 mod test;
 
 pub fn evaluate(sources: &impl SourceProvider) -> Result<EvaluationOutput, RunError> {
+    check(sources)?;
     let mut loading = Vec::new();
     load_file(
         sources,
@@ -32,7 +33,14 @@ pub fn evaluate(sources: &impl SourceProvider) -> Result<EvaluationOutput, RunEr
         &mut loading,
         Circuit::default(),
     )
-    .map(|(output, _)| output)
+    .map(|(mut output, _)| {
+        output.values = output
+            .values
+            .into_iter()
+            .map(|value| value.retain_circuit(&output.circuit))
+            .collect();
+        output
+    })
 }
 
 pub fn evaluate_typed(programs: &[TypedProgram]) -> Result<EvaluationOutput, EvaluationError> {
@@ -50,13 +58,9 @@ fn load_file(
         cycle.push(name.to_owned());
         return Err(RunError::ImportCycle(cycle));
     }
-    let source = standard_library_source(name)
-        .or_else(|| sources.get_file(name))
-        .ok_or_else(|| RunError::FileNotFound(name.to_owned()))?;
-    let programs = parser::compile(source).map_err(|errors| RunError::Compilation {
-        file: name.to_owned(),
-        error_count: errors.len(),
-    })?;
+    let name = normalize_path(name);
+    let source = read_source(sources, &name)?;
+    let programs = parser::compile(&source).map_err(|errors| compilation_error(&name, errors))?;
 
     loading.push(name.to_owned());
     let result = Evaluator::new(circuit).evaluate_file(&programs, sources, loading);
@@ -64,7 +68,7 @@ fn load_file(
     result
 }
 
-fn standard_library_source(name: &str) -> Option<&'static str> {
+pub fn standard_library_source(name: &str) -> Option<&'static str> {
     match name {
         "std/sources.etch" => Some(include_str!("../std/sources.etch")),
         "std/passive.etch" => Some(include_str!("../std/passive.etch")),
@@ -72,6 +76,119 @@ fn standard_library_source(name: &str) -> Option<&'static str> {
         "std/digital.etch" => Some(include_str!("../std/digital.etch")),
         _ => None,
     }
+}
+
+pub fn normalize_path(name: &str) -> String {
+    let mut parts = Vec::new();
+    for part in name.split('/') {
+        match part {
+            "" | "." => {}
+            ".." if parts.last().is_some_and(|part| *part != "..") => {
+                parts.pop();
+            }
+            _ => parts.push(part),
+        }
+    }
+    let prefix = if name.starts_with('/') { "/" } else { "" };
+    format!("{prefix}{}", parts.join("/"))
+}
+fn read_source(sources: &impl SourceProvider, name: &str) -> Result<String, RunError> {
+    standard_library_source(name)
+        .map(|source| Ok(source.to_owned()))
+        .unwrap_or_else(|| sources.read_file(name))
+}
+fn compilation_error(name: &str, errors: Vec<parser::CompileErrors<'_>>) -> RunError {
+    RunError::Compilation {
+        file: name.into(),
+        diagnostics: errors.iter().map(|error| error.diagnostic()).collect(),
+    }
+}
+pub fn check(sources: &impl SourceProvider) -> Result<(), RunError> {
+    check_module(
+        sources,
+        &normalize_path(sources.main_file()),
+        &mut Vec::new(),
+        &mut BTreeMap::new(),
+    )
+    .map(|_| ())
+}
+fn check_module(
+    sources: &impl SourceProvider,
+    name: &str,
+    loading: &mut Vec<String>,
+    cache: &mut BTreeMap<String, parser::ValueType>,
+) -> Result<parser::ValueType, RunError> {
+    if let Some(ty) = cache.get(name) {
+        return Ok(ty.clone());
+    }
+    if loading.iter().any(|file| file == name) {
+        let mut cycle = loading.clone();
+        cycle.push(name.into());
+        return Err(RunError::ImportCycle(cycle));
+    }
+    let source = read_source(sources, name)?;
+    let programs = parser::compile(&source).map_err(|errors| compilation_error(name, errors))?;
+    loading.push(name.into());
+    let mut imports = BTreeMap::new();
+    for program in &programs {
+        if let Program::Import(import) = &program.inner {
+            imports.insert(
+                import.path.clone(),
+                check_module(sources, &normalize_path(&import.path), loading, cache)?,
+            );
+        }
+    }
+    let programs = parser::compile_with_imports(&source, imports)
+        .map_err(|errors| compilation_error(name, errors))?;
+    let mut exports = BTreeMap::new();
+    fn collect(
+        pattern: &AstNode<Pattern<PartialMetadata>, PartialMetadata>,
+        ty: &parser::ValueType,
+        exports: &mut BTreeMap<String, parser::ValueType>,
+    ) {
+        match &pattern.inner {
+            Pattern::Binding(ident) => {
+                if let Some(symbol) = &ident.ident {
+                    exports.insert(symbol.name.clone(), ty.clone());
+                }
+            }
+            Pattern::Object(object) => {
+                for (name, pattern) in &object.fields {
+                    let field = match ty {
+                        parser::ValueType::Object(fields) => fields
+                            .get(name)
+                            .cloned()
+                            .unwrap_or(parser::ValueType::Unknown),
+                        _ => parser::ValueType::Unknown,
+                    };
+                    collect(pattern, &field, exports);
+                }
+            }
+            Pattern::Array(array) => {
+                for (index, pattern) in array.values.iter().enumerate() {
+                    let item = match ty {
+                        parser::ValueType::Array(item) => *item.clone(),
+                        parser::ValueType::Tuple(items) => items
+                            .get(index)
+                            .cloned()
+                            .unwrap_or(parser::ValueType::Unknown),
+                        _ => parser::ValueType::Unknown,
+                    };
+                    collect(pattern, &item, exports);
+                }
+            }
+            _ => {}
+        }
+    }
+    for program in &programs {
+        if let Program::Export(definition) = &program.inner {
+            collect(&definition.lhs, &definition.rhs.meta.ty, &mut exports);
+        }
+    }
+    loading.pop();
+    let result = parser::ValueType::Object(exports);
+    cache.insert(name.into(), result.clone());
+    Ok(result)
 }
 
 pub struct Evaluator {
@@ -96,7 +213,7 @@ impl Evaluator {
             },
             Value::NativeFunction(NativeFunction {
                 kind: NativeFunctionKind::Hook,
-                circuit: circuit.clone(),
+                circuit: circuit.downgrade(),
             }),
         );
         let sim = [
@@ -114,7 +231,7 @@ impl Evaluator {
                 name.into(),
                 Value::NativeFunction(NativeFunction {
                     kind,
-                    circuit: circuit.clone(),
+                    circuit: circuit.downgrade(),
                 }),
             )
         })
@@ -156,7 +273,7 @@ impl Evaluator {
                 },
                 Value::NativeFunction(NativeFunction {
                     kind,
-                    circuit: circuit.clone(),
+                    circuit: circuit.downgrade(),
                 }),
             );
         }
@@ -303,7 +420,13 @@ impl Evaluator {
     ) -> Result<Flow, EvaluationError> {
         match statement {
             Statement::Definition(definition) => {
-                let value = self.expression_node(&definition.rhs)?;
+                let mut value = self.expression_node(&definition.rhs)?;
+                if matches!(definition.rhs.inner, Expression::Lambda(_))
+                    && let (Value::Lambda(lambda), Pattern::Binding(ident)) =
+                        (&mut value, &definition.lhs.inner)
+                {
+                    lambda.recursive = ident.ident.clone();
+                }
                 self.bind(&definition.lhs, &value)?;
                 Ok(Flow::Continue(Value::None))
             }
@@ -327,6 +450,7 @@ impl Evaluator {
         match expression {
             Expression::Primative(value) => Ok(match value {
                 Primative::Boolean(value) => Value::Boolean(*value),
+                Primative::Quantity(value) => Value::Quantity(value.value, value.unit.clone()),
                 Primative::Number(value) => Value::Number(*value),
                 Primative::String(value) => Value::String(value.clone()),
             }),
@@ -353,7 +477,8 @@ impl Evaluator {
             Expression::Lambda(lambda) => Ok(Value::Lambda(LambdaValue {
                 params: lambda.params.clone(),
                 body: lambda.body.clone(),
-                scope: self.scope.clone(),
+                scope: self.scope.child(),
+                recursive: None,
             })),
             Expression::Node(_) => Ok(Value::Node(self.circuit.node())),
             Expression::UnaryOperation(operation) => {
@@ -442,19 +567,18 @@ impl Evaluator {
         &mut self,
         statements: &[AstNode<Statement<PartialMetadata>, PartialMetadata>],
     ) -> Result<Value, EvaluationError> {
-        let parent = self.scope.clone();
-        self.scope = self.scope.child();
+        let mut evaluator = Self {
+            scope: self.scope.child(),
+            circuit: self.circuit.clone(),
+            function_depth: self.function_depth,
+        };
         let mut last = Value::None;
         for statement in statements {
-            match self.statement(&statement.inner, statement.meta.span)? {
+            match evaluator.statement(&statement.inner, statement.meta.span)? {
                 Flow::Continue(value) => last = value,
-                Flow::Return(value) => {
-                    self.scope = parent;
-                    return Ok(value);
-                }
+                Flow::Return(value) => return Ok(value),
             }
         }
-        self.scope = parent;
         Ok(last)
     }
 
@@ -469,6 +593,11 @@ impl Evaluator {
             circuit: self.circuit.clone(),
             function_depth: self.function_depth + 1,
         };
+        if let Some(symbol) = &lambda.recursive {
+            evaluator
+                .scope
+                .set(symbol.clone(), Value::Lambda(lambda.clone()));
+        }
         for (symbol, ty) in &lambda.params {
             let Some(symbol) = symbol else { continue };
             let Some(value) = args.remove(&symbol.name) else {
@@ -538,7 +667,7 @@ impl Evaluator {
 
     fn ensure_nodes(&self, value: &Value, span: Span) -> Result<(), EvaluationError> {
         match value {
-            Value::Node(node) if Rc::ptr_eq(&node.circuit.inner, &self.circuit.inner) => Ok(()),
+            Value::Node(node) if node.circuit.belongs_to(&self.circuit) => Ok(()),
             Value::Node(_) => Err(self.error(span, "hook node belongs to another circuit")),
             Value::Array(values) => values
                 .iter()
@@ -573,6 +702,9 @@ impl Evaluator {
                     self.scope.set(symbol.clone(), value.clone());
                 }
                 Ok(true)
+            }
+            (Pattern::Primative(Primative::Quantity(a)), Value::Quantity(b, unit)) => {
+                Ok(a.value == *b && a.unit == *unit)
             }
             (Pattern::Primative(Primative::Boolean(a)), Value::Boolean(b)) => Ok(a == b),
             (Pattern::Primative(Primative::Number(a)), Value::Number(b)) => Ok(a == b),
@@ -649,34 +781,15 @@ impl Evaluator {
             };
         }
         match (op, lhs, rhs) {
-            (BinaryOperator::Add, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a + b)),
-            (BinaryOperator::Sub, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a - b)),
-            (BinaryOperator::Mul, Value::Number(a), Value::Number(b)) => Ok(Value::Number(a * b)),
-            (BinaryOperator::Div, Value::Number(a), Value::Number(b)) if b != 0.0 => {
-                Ok(Value::Number(a / b))
-            }
-            (BinaryOperator::Div, Value::Number(_), Value::Number(_)) => {
-                Err(self.error(span, "division by zero"))
-            }
             (BinaryOperator::Equal, a, b) => Ok(Value::Boolean(a == b)),
-            (BinaryOperator::LessThan, Value::Number(a), Value::Number(b)) => {
-                Ok(Value::Boolean(a < b))
-            }
-            (BinaryOperator::GreaterThan, Value::Number(a), Value::Number(b)) => {
-                Ok(Value::Boolean(a > b))
-            }
-            (BinaryOperator::LessThanOrEqual, Value::Number(a), Value::Number(b)) => {
-                Ok(Value::Boolean(a <= b))
-            }
-            (BinaryOperator::GreaterThanOrEqual, Value::Number(a), Value::Number(b)) => {
-                Ok(Value::Boolean(a >= b))
-            }
             (BinaryOperator::Union, Value::Object(mut a), Value::Object(b)) => {
                 a.extend(b);
                 Ok(Value::Object(a))
             }
             (BinaryOperator::Wire, Value::Node(a), Value::Node(b)) => {
-                a.connect(&b);
+                self.circuit.voltage(&a)?;
+                self.circuit.voltage(&b)?;
+                a.connect(&b)?;
                 Ok(Value::Node(a))
             }
             _ => Err(self.error(span, "invalid binary operation at runtime")),

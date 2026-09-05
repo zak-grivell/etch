@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 render_utils = { path = "../render_utils" }
+circuit_ir = { path = "../circuit_ir" }

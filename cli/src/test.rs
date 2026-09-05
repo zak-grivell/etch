@@ -187,3 +187,82 @@ fn rejects_incorrect_kicad_output_extensions_without_writing_files() {
     );
     assert!(!pcb.exists());
 }
+
+#[test]
+fn preserves_displays_with_colliding_filenames() {
+    let directory = TempDirectory::new();
+    let main = directory.0.join("main.etch");
+    fs::write(
+        &main,
+        r#"
+        display(name: "A B", steps: 1, delta_time: 1, traces: { x: () -> 1 });
+        display(name: "a-b", steps: 1, delta_time: 1, traces: { x: () -> 2 });
+        display(name: "a-b-2", steps: 1, delta_time: 1, traces: { x: () -> 3 });
+    "#,
+    )
+    .unwrap();
+    let output_dir = directory.0.join("graphs");
+    execute(Cli {
+        command: Command::Display {
+            file: main,
+            output_dir: output_dir.clone(),
+        },
+    })
+    .unwrap();
+    assert_eq!(fs::read_dir(&output_dir).unwrap().count(), 3);
+    assert!(
+        fs::read_to_string(output_dir.join("a-b.svg"))
+            .unwrap()
+            .contains("A B")
+    );
+    assert!(
+        fs::read_to_string(output_dir.join("a-b-2.svg"))
+            .unwrap()
+            .contains(">a-b</text>")
+    );
+}
+
+#[test]
+fn runs_main_files_without_an_etch_extension() {
+    let directory = TempDirectory::new();
+    let main = directory.0.join("circuit");
+    fs::write(&main, "42").unwrap();
+    assert_eq!(
+        execute(Cli {
+            command: Command::Run { file: main }
+        })
+        .unwrap(),
+        ["[0] 42"]
+    );
+}
+
+#[test]
+fn check_reads_only_reachable_imports_and_keeps_diagnostics() {
+    let directory = TempDirectory::new();
+    let main = directory.0.join("main.etch");
+    fs::write(&main, "assert(condition: false)").unwrap();
+    fs::write(directory.0.join("broken.etch"), [255, 254]).unwrap();
+    assert!(
+        execute(Cli {
+            command: Command::Check { file: main.clone() }
+        })
+        .is_ok()
+    );
+    fs::write(&main, "from \"broken.etch\" import { x }").unwrap();
+    assert!(
+        execute(Cli {
+            command: Command::Check { file: main.clone() }
+        })
+        .unwrap_err()
+        .to_string()
+        .contains("broken.etch")
+    );
+    fs::write(&main, "let x = unknown").unwrap();
+    let diagnostic = execute(Cli {
+        command: Command::Check { file: main },
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(diagnostic.contains("undefined name `unknown`"));
+    assert!(diagnostic.contains("8..15"));
+}

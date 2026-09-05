@@ -178,6 +178,7 @@ where
     I: ValueInput<'src, Token = Token<'src>, Span = Span>,
 {
     select! {
+        Token::Number { value, unit: Some(unit), .. } => Primative::Quantity(ast::Quantity { value, unit: unit.to_string() }),
         Token::Number { value, .. } => Primative::Number(value),
         Token::Bool(val) => Primative::Boolean(val),
         Token::Str(s) => Primative::String(s.to_string()),
@@ -287,37 +288,34 @@ where
             ))
             .boxed();
 
-            let dot = tree
+            enum Suffix {
+                Field(String),
+                Call(BTreeMap<String, Parsed<Expression<ParsedNode>>>),
+            }
+            let field = symbol!(Dot).ignore_then(ident).map(Suffix::Field);
+            let arguments = ident
+                .then_ignore(symbol!(Colon))
+                .then(expression.clone())
+                .separated_by(symbol!(Comma))
+                .allow_trailing()
+                .collect::<Vec<_>>()
+                .try_map(collect_unique)
+                .delimited_by(symbol!(OpenParenthesis), symbol!(ClosedParenthesis))
+                .map(Suffix::Call);
+            let call = tree
                 .foldl_with(
-                    symbol!(Dot).ignore_then(ident).repeated(),
-                    |expression: Parsed<Expression<ParsedNode>>, field: String, e| AstNode {
-                        inner: Expression::ObjectAccess(ast::ObjectAccess {
-                            expression: Box::new(expression),
-                            field,
-                        }),
-                        meta: e.span(),
-                    },
-                )
-                .boxed();
-
-            let call = dot
-                .foldl_with(
-                    ident
-                        .then_ignore(symbol!(Colon))
-                        .then(expression.clone())
-                        .separated_by(symbol!(Comma))
-                        .allow_trailing()
-                        .collect::<Vec<_>>()
-                        .try_map(collect_unique)
-                        .delimited_by(symbol!(OpenParenthesis), symbol!(ClosedParenthesis))
-                        .repeated(),
-                    |expression: Parsed<Expression<ParsedNode>>,
-                     args: BTreeMap<String, Parsed<Expression<ParsedNode>>>,
-                     e| AstNode {
-                        inner: Expression::Call(ast::Call {
-                            expression: Box::new(expression),
-                            args,
-                        }),
+                    choice((field, arguments)).repeated(),
+                    |expression: Parsed<Expression<ParsedNode>>, suffix, e| AstNode {
+                        inner: match suffix {
+                            Suffix::Field(field) => Expression::ObjectAccess(ast::ObjectAccess {
+                                expression: Box::new(expression),
+                                field,
+                            }),
+                            Suffix::Call(args) => Expression::Call(ast::Call {
+                                expression: Box::new(expression),
+                                args,
+                            }),
+                        },
                         meta: e.span(),
                     },
                 )
@@ -543,17 +541,13 @@ where
                     .map(|symbol| {
                         Type::Number(ast::NumberType {
                             symbol,
-                            alias: None,
                         })
                     }),
                 just(Token::Identifier("String")).to(Type::String(ast::StringType)),
                 just(Token::Identifier("Bool")).to(Type::Boolean(ast::BooleanType)),
                 just(Token::Identifier("None")).to(Type::None(ast::NoneType)),
                 just(Token::Identifier("Never")).to(Type::Never(ast::NeverType)),
-                select! { Token::Identifier(name) => Type::Number(ast::NumberType {
-                    symbol: None,
-                    alias: Some(name.to_string()),
-                }) },
+                select! { Token::Identifier(name) => Type::Named(ast::NamedType { name: name.to_string() }) },
             ))
             .spanned_node()
             .boxed();

@@ -148,7 +148,7 @@ fn provides_one_shared_zero_volt_ground() {
     let Value::Node(ground) = &nodes[0] else {
         panic!("expected a ground node")
     };
-    assert_eq!(output.circuit.voltage(ground), 0.0);
+    assert_eq!(output.circuit.voltage(ground).unwrap(), 0.0);
 }
 
 #[test]
@@ -187,7 +187,7 @@ fn connects_nodes() {
     let Value::Node(node) = &values[0] else {
         panic!("expected a node")
     };
-    assert_eq!(node.connections().len(), 1);
+    assert_eq!(node.connections().unwrap().len(), 1);
 }
 
 #[test]
@@ -359,9 +359,9 @@ fn constructs_and_simulates_component_hooks() {
     let Value::Node(middle) = &nodes["middle"] else {
         panic!("expected middle node")
     };
-    assert_eq!(output.circuit.voltage(high), 5.0);
-    assert!((output.circuit.voltage(middle) - 2.5).abs() < 1e-6);
-    assert_eq!(output.circuit.voltage(low), 0.0);
+    assert_eq!(output.circuit.voltage(high).unwrap(), 5.0);
+    assert!((output.circuit.voltage(middle).unwrap() - 2.5).abs() < 1e-6);
+    assert_eq!(output.circuit.voltage(low).unwrap(), 0.0);
 }
 
 #[test]
@@ -443,8 +443,8 @@ fn models_analog_equations_and_digital_logic() {
     let Value::Node(digital) = &nodes["digital"] else {
         panic!("expected digital output node")
     };
-    assert!((output.circuit.voltage(analog) - 1.0).abs() < 1e-6);
-    assert_eq!(output.circuit.voltage(digital), 0.0);
+    assert!((output.circuit.voltage(analog).unwrap() - 1.0).abs() < 1e-6);
+    assert_eq!(output.circuit.voltage(digital).unwrap(), 0.0);
 }
 
 #[test]
@@ -501,9 +501,9 @@ fn hook_style_state_models_a_capacitor_derivative() {
     };
 
     output.circuit.simulate(1, 0.001).unwrap();
-    assert!((output.circuit.voltage(node) - 1.0 / 11.0).abs() < 1e-6);
+    assert!((output.circuit.voltage(node).unwrap() - 1.0 / 11.0).abs() < 1e-6);
     output.circuit.simulate(1, 0.001).unwrap();
-    assert!((output.circuit.voltage(node) - 1.0 / 121.0).abs() < 1e-6);
+    assert!((output.circuit.voltage(node).unwrap() - 1.0 / 121.0).abs() < 1e-6);
 }
 
 #[test]
@@ -558,9 +558,9 @@ fn hook_style_state_models_a_rising_edge_flip_flop() {
     };
 
     output.circuit.simulate(1, 0.001).unwrap();
-    assert_eq!(output.circuit.voltage(q), 0.0);
+    assert_eq!(output.circuit.voltage(q).unwrap(), 0.0);
     output.circuit.simulate(1, 0.001).unwrap();
-    assert_eq!(output.circuit.voltage(q), 5.0);
+    assert_eq!(output.circuit.voltage(q).unwrap(), 5.0);
 }
 
 #[test]
@@ -698,4 +698,174 @@ fn reports_display_trace_errors_without_mutating_the_circuit() {
         Err(error) if error.message == "display trace `status` must return a number"
     ));
     assert_eq!(output.circuit.time(), 0.0);
+}
+
+#[test]
+fn rejects_unexpected_native_arguments() {
+    for expression in [
+        "voltage(node: ground, typo: 1)",
+        "conductance(between: [ground, ground], value: 1, typo: 1)",
+        "current(between: [ground, ground], value: 1, typo: 1)",
+        "fix_voltage(node: ground, value: 1, typo: 1)",
+        "drive_voltage(node: ground, value: 1, conductance: 1, typo: 1)",
+    ] {
+        let error = evaluate(&Sources::single(expression)).unwrap_err();
+        assert!(
+            matches!(error, RunError::Evaluation(ref error) if error.message.contains("unexpected argument `typo`")),
+            "{error:?}"
+        );
+    }
+}
+
+#[test]
+fn rejects_invalid_simulation_time_without_mutation() {
+    let circuit = crate::Circuit::default();
+    for delta in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        assert!(circuit.simulate(1, delta).is_err());
+        assert_eq!(circuit.time(), 0.0);
+    }
+}
+
+#[test]
+fn equality_preserves_units_and_circuit_identity() {
+    assert_ne!(Value::Number(1.0), Value::Quantity(1.0, "V".into()));
+    let first = evaluate(&Sources::single("ground")).unwrap();
+    let second = evaluate(&Sources::single("ground")).unwrap();
+    assert_ne!(first.values, second.values);
+    assert_eq!(first.values, first.values.clone());
+}
+
+#[test]
+fn evaluates_shadowing_and_chained_access() {
+    assert_eq!(run("let x = 1; let x = x + 1; x"), vec![Value::Number(2.0)]);
+    assert_eq!(
+        run("let make = () -> { value: () -> { answer: 42 } }; make().value().answer"),
+        vec![Value::Number(42.0)]
+    );
+}
+
+#[test]
+fn detects_conflicting_fixed_voltages() {
+    let output = evaluate(&Sources::single("let make = () -> use_equation(equation: () -> fix_voltage(node: ground, value: 5)); make()")).unwrap();
+    assert!(output.circuit.simulate(1, 0.001).is_err());
+}
+
+#[test]
+fn quantities_and_string_escapes_survive_evaluation() {
+    assert_eq!(run("2mV + 3mV"), vec![Value::Quantity(0.005, "V".into())]);
+    assert_eq!(
+        run(r#""a\"b\\c\n\t""#),
+        vec![Value::String("a\"b\\c\n\t".into())]
+    );
+}
+#[test]
+fn check_validates_imports_without_running_code() {
+    let sources = Sources {
+        main: "main.etch".into(),
+        files: BTreeMap::from([
+            (
+                "main.etch".into(),
+                "from \"./sub/../module.etch\" import { value }; assert(condition: false); value"
+                    .into(),
+            ),
+            (
+                "module.etch".into(),
+                "export let value = 42; assert(condition: false)".into(),
+            ),
+        ]),
+    };
+    assert!(crate::check(&sources).is_ok());
+    assert!(evaluate(&sources).is_err());
+    let mut missing = sources;
+    missing.files.insert(
+        "main.etch".into(),
+        "from \"module.etch\" import { absent }; absent".into(),
+    );
+    assert!(
+        crate::check(&missing)
+            .unwrap_err()
+            .to_string()
+            .contains("does not export `absent`")
+    );
+    missing.files.insert(
+        "main.etch".into(),
+        "from \"module.etch\" import { value }; value + true".into(),
+    );
+    assert!(
+        crate::check(&missing)
+            .unwrap_err()
+            .to_string()
+            .contains("invalid operands")
+    );
+}
+#[test]
+fn releasing_outputs_reclaims_circuits_and_recursive_closures() {
+    for _ in 0..20 {
+        let output = evaluate(&Sources::single("let fact = (n: Number) -> match n { 0 -> 1, let n -> n * fact(n: n - 1) }; let make = () -> use_equation(equation: () -> voltage(node: ground)); make(); fact")).unwrap();
+        let circuit = std::rc::Rc::downgrade(&output.circuit.inner);
+        let Value::Lambda(lambda) = &output.values[0] else {
+            panic!("expected closure")
+        };
+        let scope = std::rc::Rc::downgrade(&lambda.scope.values);
+        drop(output);
+        assert!(circuit.upgrade().is_none());
+        assert!(scope.upgrade().is_none());
+    }
+    assert_eq!(
+        run("let make = (x: Number) -> (y: Number) -> x + y; let add = make(x: 2); add(y: 3)"),
+        vec![Value::Number(5.0)]
+    );
+}
+#[test]
+fn foreign_circuit_nodes_are_rejected() {
+    let a = crate::Circuit::default();
+    let b = crate::Circuit::default();
+    let first = a.node();
+    let second = b.node();
+    assert!(a.voltage(&second).is_err());
+    assert!(first.connect(&second).is_err());
+    assert!(first.connections().unwrap().is_empty());
+}
+#[test]
+fn failed_simulation_rolls_back_and_floating_circuits_fail() {
+    for source in [
+        "let make = () -> { let a = use_node(); let b = use_node(); use_equation(equation: () -> conductance(between: [a,b], value: 1)) }; make()",
+        "let make = () -> { let a = use_node(); use_equation(equation: () -> drive_voltage(node: a, value: match voltage(node: a) > 0.5 { true -> 0, false -> 1 }, conductance: 1)) }; make()",
+        "let make = () -> use_equation(equation: () -> assert(condition: time() < 1)); make()",
+    ] {
+        let output = evaluate(&Sources::single(source)).unwrap();
+        let before = output.circuit.node_voltages();
+        assert!(output.circuit.simulate(2, 1.0).is_err());
+        assert_eq!(output.circuit.node_voltages(), before);
+        assert_eq!(output.circuit.time(), 0.0);
+    }
+}
+#[test]
+fn solves_a_resistor_ladder_against_its_analytic_solution() {
+    let circuit = crate::Circuit::default();
+    let low = circuit.ground();
+    let nodes: Vec<_> = (0..10).map(|_| circuit.node()).collect();
+    {
+        let mut state = circuit.inner.borrow_mut();
+        state.fixed.insert(low.id, 0.0);
+        state.fixed.insert(nodes[9].id, 10.0);
+        state.conductances.push((low.id, nodes[0].id, 1.0));
+        for pair in nodes.windows(2) {
+            state.conductances.push((pair[0].id, pair[1].id, 1.0));
+        }
+    }
+    circuit.solve_iteration().unwrap();
+    for (index, node) in nodes.iter().enumerate() {
+        assert!((circuit.voltage(node).unwrap() - (index + 1) as f64).abs() < 1e-10);
+    }
+}
+
+#[test]
+fn aliasing_a_recursive_closure_keeps_its_self_binding() {
+    assert_eq!(
+        run(
+            "let f = (n: Number) -> match n { 0 -> 1, let n -> n * f(n: n - 1) }; let alias = f; alias(n: 5)"
+        ),
+        vec![Value::Number(120.0)]
+    );
 }

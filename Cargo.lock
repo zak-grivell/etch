@@ -99,7 +99,6 @@ dependencies = [
 name = "ast_macros"
 version = "0.1.0"
 dependencies = [
- "proc-macro2",
  "quote",
  "syn 2.0.117",
 ]
@@ -407,6 +406,7 @@ dependencies = [
 name = "graph_render"
 version = "0.1.0"
 dependencies = [
+ "circuit_ir",
  "render_utils",
 ]
 

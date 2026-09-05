@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,7 +18,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Compile and resolve a program and all of its imports.
+    /// Check a program and its imports without executing them.
     Check { file: PathBuf },
     /// Evaluate a program and print its resulting values.
     Run { file: PathBuf },
@@ -118,7 +118,7 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
-            Self::Evaluation(error) => write!(f, "{error:?}"),
+            Self::Evaluation(error) => write!(f, "{error}"),
             Self::InvalidSimulation(message) => f.write_str(message),
             Self::TestsFailed(lines) | Self::DisplaysFailed(lines) => {
                 f.write_str(&lines.join("\n"))
@@ -140,7 +140,7 @@ pub fn execute(cli: Cli) -> Result<Vec<String>, CliError> {
     match cli.command {
         Command::Check { file } => {
             let sources = FileSources::load(&file)?;
-            evaluate(&sources)?;
+            evaluator::check(&sources)?;
             Ok(vec![format!("checked {}", file.display())])
         }
         Command::Run { file } => {
@@ -248,22 +248,9 @@ pub fn execute(cli: Cli) -> Result<Vec<String>, CliError> {
             }
         }
         Command::KicadSchematic { file, output } => {
-            validate_output_extension(&output, "kicad_sch", "KiCad schematic")?;
-            let evaluated = evaluate_file(&file)?;
-            let schematic = kicad::schematic(&evaluated.design()).map_err(CliError::Generation)?;
-            write_file(&output, &schematic)?;
-            Ok(vec![format!(
-                "wrote KiCad schematic to {}",
-                output.display()
-            )])
+            export_schematic(&file, ExportFormat::Kicad, &output)
         }
-        Command::KicadPcb { file, output } => {
-            validate_output_extension(&output, "kicad_pcb", "KiCad PCB")?;
-            let evaluated = evaluate_file(&file)?;
-            let pcb = kicad::pcb(&evaluated.design()).map_err(CliError::Generation)?;
-            write_file(&output, &pcb)?;
-            Ok(vec![format!("wrote KiCad PCB to {}", output.display())])
-        }
+        Command::KicadPcb { file, output } => export_pcb(&file, ExportFormat::Kicad, &output),
         Command::Display { file, output_dir } => {
             let evaluated = evaluate_file(&file)?;
             let displays = evaluated.run_displays();
@@ -273,19 +260,19 @@ pub fn execute(cli: Cli) -> Result<Vec<String>, CliError> {
             })?;
             let mut lines = Vec::new();
             let mut failures = 0;
+            let mut filenames = BTreeSet::new();
             for display in displays {
                 match display.result {
                     Ok(graph) => {
-                        let path = output_dir.join(format!("{}.svg", slug(&display.name)));
-                        let traces = graph
-                            .traces
-                            .into_iter()
-                            .map(|trace| graph_render::TraceSeries {
-                                name: trace.name,
-                                samples: trace.samples,
-                            })
-                            .collect::<Vec<_>>();
-                        let svg = graph_render::render(&display.name, &traces);
+                        let base = slug(&display.name);
+                        let mut filename = format!("{base}.svg");
+                        let mut suffix = 2;
+                        while !filenames.insert(filename.clone()) {
+                            filename = format!("{base}-{suffix}.svg");
+                            suffix += 1;
+                        }
+                        let path = output_dir.join(filename);
+                        let svg = graph_render::render(&display.name, &graph.traces);
                         write_file(&path, &svg)?;
                         lines.push(format!("wrote {}", path.display()));
                     }
@@ -406,77 +393,32 @@ fn slug(name: &str) -> String {
 
 struct FileSources {
     main: String,
-    files: BTreeMap<String, String>,
+    root: PathBuf,
 }
-
 impl FileSources {
     fn load(main: &Path) -> Result<Self, CliError> {
         let main = main.canonicalize().map_err(|error| CliError::Io {
             path: main.to_owned(),
             error,
         })?;
-        let root = main.parent().unwrap_or(Path::new(".")).to_owned();
-        let mut files = BTreeMap::new();
-        load_directory(&root, &root, &mut files)?;
-        let main = relative_name(&root, &main);
-        Ok(Self { main, files })
+        Ok(Self {
+            root: main.parent().unwrap().to_owned(),
+            main: main.file_name().unwrap().to_string_lossy().into_owned(),
+        })
     }
 }
-
 impl SourceProvider for FileSources {
     fn main_file(&self) -> &str {
         &self.main
     }
-
-    fn get_file(&self, name: &str) -> Option<&str> {
-        self.files.get(name).map(String::as_str)
+    fn get_file(&self, _: &str) -> Option<&str> {
+        None
     }
-}
-
-fn load_directory(
-    root: &Path,
-    directory: &Path,
-    files: &mut BTreeMap<String, String>,
-) -> Result<(), CliError> {
-    let entries = fs::read_dir(directory).map_err(|error| CliError::Io {
-        path: directory.to_owned(),
-        error,
-    })?;
-    for entry in entries {
-        let entry = entry.map_err(|error| CliError::Io {
-            path: directory.to_owned(),
-            error,
-        })?;
-        let file_type = entry.file_type().map_err(|error| CliError::Io {
-            path: entry.path(),
-            error,
-        })?;
-        if file_type.is_dir()
-            && !matches!(
-                entry.file_name().to_str(),
-                Some("target" | ".git" | ".direnv")
-            )
-        {
-            load_directory(root, &entry.path(), files)?;
-        } else if file_type.is_file() {
-            let path = entry.path();
-            if matches!(
-                path.extension().and_then(|extension| extension.to_str()),
-                Some("etch" | "txt")
-            ) && let Ok(contents) = fs::read_to_string(&path)
-            {
-                files.insert(relative_name(root, &path), contents);
-            }
-        }
+    fn read_file(&self, name: &str) -> Result<String, RunError> {
+        let path = self.root.join(evaluator::normalize_path(name));
+        fs::read_to_string(&path).map_err(|error| RunError::Io {
+            file: path.display().to_string(),
+            message: error.to_string(),
+        })
     }
-    Ok(())
-}
-
-fn relative_name(root: &Path, path: &Path) -> String {
-    path.strip_prefix(root)
-        .unwrap_or(path)
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy())
-        .collect::<Vec<_>>()
-        .join("/")
 }

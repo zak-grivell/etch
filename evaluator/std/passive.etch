@@ -24,12 +24,9 @@ export let Capacitor = (capacitance: Capacitance) -> {
     let previous_voltage = use_state(initial: 0);
     use_equation(equation: () -> {
         let across = voltage(node: a) - voltage(node: b);
-        current(
-            between: [a, b],
-            value: capacitance
-                * (across - previous_voltage.get())
-                / delta_time(),
-        );
+        let g = capacitance / delta_time();
+        conductance(between: [a, b], value: g);
+        current(between: [a, b], value: -g * previous_voltage.get());
         previous_voltage.set(value: across)
     });
     return { a, b };
@@ -43,6 +40,7 @@ export let Inductor = (inductance: Inductance) -> {
     });
     let stored_current = use_state(initial: 0);
     use_equation(equation: () -> {
+        conductance(between: [a, b], value: delta_time() / inductance);
         current(between: [a, b], value: stored_current.get());
         stored_current.set(
             value: stored_current.get()

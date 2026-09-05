@@ -1,5 +1,5 @@
 use proc_macro::TokenStream;
-use quote::{format_ident, quote};
+use quote::quote;
 use syn::visit_mut::{self, VisitMut};
 use syn::{
     FnArg, GenericArgument, ImplItem, ItemImpl, PathArguments, ReturnType, Type, parse_macro_input,
@@ -181,13 +181,9 @@ pub fn transformer(_attr: TokenStream, item: TokenStream) -> TokenStream {
                 });
             }
             other => {
-                let name = format_ident!("unsupported_impl_item");
-                return syn::Error::new_spanned(
-                    other,
-                    format!("unsupported item `{name}` in transformer"),
-                )
-                .into_compile_error()
-                .into();
+                return syn::Error::new_spanned(other, "unsupported item in transformer")
+                    .into_compile_error()
+                    .into();
             }
         }
     }
@@ -202,8 +198,7 @@ pub fn transformer(_attr: TokenStream, item: TokenStream) -> TokenStream {
 }
 
 struct IdentityArgs {
-    #[allow(dead_code)]
-    name: syn::Ident,
+    _name: syn::Ident,
     ty: Type,
 }
 
@@ -212,6 +207,6 @@ impl syn::parse::Parse for IdentityArgs {
         let name = input.parse()?;
         input.parse::<syn::Token![,]>()?;
         let ty = input.parse()?;
-        Ok(Self { name, ty })
+        Ok(Self { _name: name, ty })
     }
 }

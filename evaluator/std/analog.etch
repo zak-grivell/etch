@@ -44,7 +44,7 @@ export let Diode = (forward_voltage: Number, on_resistance: Number, off_resistan
     let anode = use_node();
     let cathode = use_node();
     use_symbol(kind: "diode", ports: { anode, cathode }, value: forward_voltage, kicad: {
-        symbol: "Device:D", footprint: "Diode_SMD:D_0603_1608Metric", pins: { anode: "1", cathode: "2" },
+        symbol: "Device:D", footprint: "Diode_SMD:D_0603_1608Metric", pins: { anode: "2", cathode: "1" },
     });
     use_equation(equation: () -> {
         let resistance = match voltage(node: anode) - voltage(node: cathode) > forward_voltage {
@@ -60,7 +60,7 @@ export let Led = (forward_voltage: Number, on_resistance: Number, off_resistance
     let anode = use_node();
     let cathode = use_node();
     use_symbol(kind: "led", ports: { anode, cathode }, value: forward_voltage, kicad: {
-        symbol: "Device:LED", footprint: "LED_SMD:LED_0603_1608Metric", pins: { anode: "1", cathode: "2" },
+        symbol: "Device:LED", footprint: "LED_SMD:LED_0603_1608Metric", pins: { anode: "2", cathode: "1" },
     });
     use_equation(equation: () -> {
         let resistance = match voltage(node: anode) - voltage(node: cathode) > forward_voltage {

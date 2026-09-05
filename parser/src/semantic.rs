@@ -53,12 +53,17 @@ pub type TypedProgram = AstNode<Program<PartialMetadata>, PartialMetadata>;
 #[derive(Default)]
 pub struct TypeResolver {
     types: BTreeMap<Symbol, ValueType>,
-    aliases: BTreeMap<String, NumberType>,
+    aliases: BTreeMap<String, Type<PartialMetadata>>,
+    imports: BTreeMap<String, ValueType>,
+    type_symbols: std::collections::BTreeSet<Symbol>,
 }
 
 impl TypeResolver {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn with_imports(imports: BTreeMap<String, ValueType>) -> Self {
+        Self {
+            imports,
+            ..Self::default()
+        }
     }
     fn meta(meta: &Span, ty: ValueType) -> PartialMetadata {
         PartialMetadata { span: *meta, ty }
@@ -104,11 +109,14 @@ impl TypeResolver {
                 }
             }
             Pattern::Array(array) => {
-                for pattern in &array.values {
+                for (index, pattern) in array.values.iter().enumerate() {
                     self.bind(
                         pattern,
                         match &ty {
                             ValueType::Array(item) => (**item).clone(),
+                            ValueType::Tuple(items) => {
+                                items.get(index).cloned().unwrap_or(ValueType::Unknown)
+                            }
                             _ => ValueType::Unknown,
                         },
                     );
@@ -119,18 +127,35 @@ impl TypeResolver {
     }
 }
 
-fn compatible(a: &ValueType, b: &ValueType) -> bool {
-    a == b
-        || *a == ValueType::Unknown
-        || *b == ValueType::Unknown
-        || matches!(
-            (a, b),
-            (ValueType::Number(None), ValueType::Number(Some(_)))
-        )
-        || matches!(
-            (a, b),
-            (ValueType::Number(Some(_)), ValueType::Number(None))
-        )
+pub fn compatible(expected: &ValueType, actual: &ValueType) -> bool {
+    use ValueType::*;
+    if expected == actual || matches!(expected, Unknown) || matches!(actual, Unknown | Never) {
+        return true;
+    }
+    match (expected, actual) {
+        (_, Union(options)) => options.iter().all(|option| compatible(expected, option)),
+        (Union(options), _) => options.iter().any(|option| compatible(option, actual)),
+        (Optional(_), None) => true,
+        (Optional(inner), Optional(other)) => compatible(inner, other),
+        (Optional(inner), _) => compatible(inner, actual),
+        (_, Optional(inner)) => compatible(expected, &None) && compatible(expected, inner),
+        (Number(a), Number(b)) => a.is_none() || b.is_none(),
+        (Array(a), Array(b)) => compatible(a, b),
+        (Array(a), Tuple(items)) => items.iter().all(|b| compatible(a, b)),
+        (Tuple(a), Tuple(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| compatible(a, b))
+        }
+        (Object(a), Object(b)) => a
+            .iter()
+            .all(|(name, ty)| b.get(name).is_some_and(|other| compatible(ty, other))),
+        (Lambda { params: a, rtn: ar }, Lambda { params: b, rtn: br }) => {
+            a.len() == b.len()
+                && a.iter()
+                    .all(|(name, ty)| b.get(name).is_some_and(|other| compatible(other, ty)))
+                && compatible(ar, br)
+        }
+        _ => false,
+    }
 }
 
 fn number_type(value: &ValueType) -> Option<Option<String>> {
@@ -160,6 +185,36 @@ impl AstTransform for TypeResolver {
     type From = SymbolNode;
     type To = PartialMetadata;
 
+    fn transform_named(
+        &mut self,
+        n: AstNode<NamedType, Self::From>,
+    ) -> Results<AstNode<Type<Self::To>, Self::To>, Self::Error> {
+        match self.aliases.get(&n.inner.name) {
+            Some(ty) => Results::ok(AstNode {
+                inner: ty.clone(),
+                meta: Self::meta(&n.meta, type_value(ty)),
+            }),
+            None => Results::with_errors(
+                AstNode {
+                    inner: Type::Named(n.inner.clone()),
+                    meta: Self::meta(&n.meta, ValueType::Unknown),
+                },
+                vec![Self::error(
+                    &n.meta,
+                    format!("unknown type `{}`", n.inner.name),
+                )],
+            ),
+        }
+    }
+    fn transform_quantity(
+        &mut self,
+        n: AstNode<Quantity, Self::From>,
+    ) -> Results<AstNode<Quantity, Self::To>, Self::Error> {
+        Results::ok(AstNode {
+            meta: Self::meta(&n.meta, ValueType::Number(Some(n.inner.unit.clone()))),
+            inner: n.inner,
+        })
+    }
     fn transform_definition(
         &mut self,
         AstNode { inner, meta }: AstNode<Definition<Self::From>, Self::From>,
@@ -168,10 +223,10 @@ impl AstTransform for TypeResolver {
             .zip(self.transform_expression(inner.rhs))
             .map(|(lhs, rhs)| {
                 let ty = rhs.meta.ty.clone();
-                self.bind(&lhs, ty.clone());
+                self.bind(&lhs, ty);
                 AstNode {
                     inner: Definition { lhs, rhs },
-                    meta: Self::meta(&meta, ty),
+                    meta: Self::meta(&meta, ValueType::None),
                 }
             })
     }
@@ -180,8 +235,9 @@ impl AstTransform for TypeResolver {
         AstNode { inner, meta }: AstNode<TypeDefinition<Self::From>, Self::From>,
     ) -> Results<AstNode<TypeDefinition<Self::To>, Self::To>, Self::Error> {
         self.transform_type(inner.rhs).map(|rhs| {
-            if let (Some(name), Type::Number(number)) = (&inner.lhs, &rhs.inner) {
-                self.aliases.insert(name.name.clone(), number.clone());
+            if let Some(name) = &inner.lhs {
+                self.aliases.insert(name.name.clone(), rhs.inner.clone());
+                self.type_symbols.insert(name.clone());
             }
             AstNode {
                 inner: TypeDefinition {
@@ -209,50 +265,68 @@ impl AstTransform for TypeResolver {
         AstNode { inner, meta }: AstNode<Match<Self::From>, Self::From>,
     ) -> Results<AstNode<Match<Self::To>, Self::To>, Self::Error> {
         let on = self.transform_expression(*inner.on);
-        let arms = inner
-            .arms
-            .into_iter()
-            .map(|arm| {
-                let pattern = match arm.pattern {
-                    Some(v) => self.transform_pattern(v).map(Some),
-                    None => Results::ok(None),
-                };
-                let condition = match arm.condition {
-                    Some(v) => self.transform_expression(*v).flat_map(|v| {
-                        let errors = if compatible(&ValueType::Boolean, &v.meta.ty) {
-                            vec![]
-                        } else {
-                            vec![Self::error(&meta, "match guard must be boolean")]
-                        };
-                        Results::with_errors(Some(Box::new(v)), errors)
-                    }),
-                    None => Results::ok(None),
-                };
-                pattern
-                    .zip(condition)
-                    .zip(self.transform_expression(*arm.result).map(Box::new))
-                    .map(|((pattern, condition), result)| MatchArm {
-                        pattern,
-                        condition,
-                        result,
-                    })
+        on.flat_map(|on| {
+            let arms = inner
+                .arms
+                .into_iter()
+                .map(|arm| {
+                    let pattern = match arm.pattern {
+                        Some(v) => self.transform_pattern(v).map(|pattern| {
+                            self.bind(&pattern, on.meta.ty.clone());
+                            Some(pattern)
+                        }),
+                        None => Results::ok(None),
+                    };
+                    let condition = match arm.condition {
+                        Some(v) => self.transform_expression(*v).flat_map(|v| {
+                            let errors = if compatible(&ValueType::Boolean, &v.meta.ty) {
+                                vec![]
+                            } else {
+                                vec![Self::error(&meta, "match guard must be boolean")]
+                            };
+                            Results::with_errors(Some(Box::new(v)), errors)
+                        }),
+                        None => Results::ok(None),
+                    };
+                    pattern
+                        .zip(condition)
+                        .zip(self.transform_expression(*arm.result).map(Box::new))
+                        .map(|((pattern, condition), result)| MatchArm {
+                            pattern,
+                            condition,
+                            result,
+                        })
+                })
+                .collect::<Results<Vec<MatchArm<PartialMetadata>>, _>>();
+            arms.map(|arms| {
+                let ty = unify(arms.iter().map(|arm| arm.result.meta.ty.clone()));
+                AstNode {
+                    inner: Match {
+                        on: Box::new(on),
+                        arms,
+                    },
+                    meta: Self::meta(&meta, ty),
+                }
             })
-            .collect::<Results<Vec<MatchArm<PartialMetadata>>, _>>();
-        on.zip(arms).map(|(on, arms)| {
-            let ty = unify(arms.iter().map(|arm| arm.result.meta.ty.clone()));
-            AstNode {
-                inner: Match {
-                    on: Box::new(on),
-                    arms,
-                },
-                meta: Self::meta(&meta, ty),
-            }
         })
     }
     fn transform_ident(
         &mut self,
         AstNode { inner, meta }: AstNode<Ident<Self::From>, Self::From>,
     ) -> Results<AstNode<Ident<Self::To>, Self::To>, Self::Error> {
+        if inner
+            .ident
+            .as_ref()
+            .is_some_and(|symbol| self.type_symbols.contains(symbol))
+        {
+            return Results::with_errors(
+                AstNode {
+                    inner: Ident { ident: inner.ident },
+                    meta: Self::meta(&meta, ValueType::Unknown),
+                },
+                vec![Self::error(&meta, "a type name cannot be used as a value")],
+            );
+        }
         let ty = inner
             .ident
             .as_ref()
@@ -273,23 +347,12 @@ impl AstTransform for TypeResolver {
             .into_iter()
             .map(|v| self.transform_expression(v))
             .collect::<Results<Vec<_>, _>>()
-            .flat_map(|items| {
-                let item_ty = items
-                    .first()
-                    .map(|v| v.meta.ty.clone())
-                    .unwrap_or(ValueType::Unknown);
-                let errors = if items.iter().all(|v| compatible(&item_ty, &v.meta.ty)) {
-                    vec![]
-                } else {
-                    vec![Self::error(&meta, "array items must have the same type")]
-                };
-                Results::with_errors(
-                    AstNode {
-                        inner: Array { items },
-                        meta: Self::meta(&meta, ValueType::Array(Box::new(item_ty))),
-                    },
-                    errors,
-                )
+            .map(|items| {
+                let ty = ValueType::Tuple(items.iter().map(|item| item.meta.ty.clone()).collect());
+                AstNode {
+                    inner: Array { items },
+                    meta: Self::meta(&meta, ty),
+                }
             })
     }
     fn transform_object(
@@ -439,7 +502,14 @@ impl AstTransform for TypeResolver {
                     {
                         ValueType::Node
                     }
-                    BinaryOperator::Union => unify([lhs.meta.ty.clone(), rhs.meta.ty.clone()]),
+                    BinaryOperator::Union => match (&lhs.meta.ty, &rhs.meta.ty) {
+                        (ValueType::Object(left), ValueType::Object(right)) => {
+                            let mut fields = left.clone();
+                            fields.extend(right.clone());
+                            ValueType::Object(fields)
+                        }
+                        _ => ValueType::Unknown,
+                    },
                     _ => ValueType::Unknown,
                 };
                 let errors = if ty == ValueType::Unknown
@@ -603,14 +673,33 @@ impl AstTransform for TypeResolver {
         &mut self,
         AstNode { inner, meta }: AstNode<Import<Self::From>, Self::From>,
     ) -> Results<AstNode<Import<Self::To>, Self::To>, Self::Error> {
-        self.transform_pattern(inner.imports)
-            .map(|imports| AstNode {
-                inner: Import {
-                    imports,
-                    path: inner.path,
+        self.transform_pattern(inner.imports).flat_map(|imports| {
+            let mut errors = Vec::new();
+            if let Some(ty) = self.imports.get(&inner.path).cloned() {
+                if let (Pattern::Object(pattern), ValueType::Object(fields)) = (&imports.inner, &ty)
+                {
+                    for name in pattern.fields.keys() {
+                        if !fields.contains_key(name) {
+                            errors.push(Self::error(
+                                &meta,
+                                format!("module `{}` does not export `{name}`", inner.path),
+                            ));
+                        }
+                    }
+                }
+                self.bind(&imports, ty);
+            }
+            Results::with_errors(
+                AstNode {
+                    inner: Import {
+                        imports,
+                        path: inner.path,
+                    },
+                    meta: Self::meta(&meta, ValueType::None),
                 },
-                meta: Self::meta(&meta, ValueType::None),
-            })
+                errors,
+            )
+        })
     }
     fn transform_type_node(
         &mut self,
@@ -625,20 +714,7 @@ impl AstTransform for TypeResolver {
         &mut self,
         n: AstNode<NumberType, Self::From>,
     ) -> Results<AstNode<NumberType, Self::To>, Self::Error> {
-        let number = if let Some(alias) = n.inner.alias.clone() {
-            let Some(number) = self.aliases.get(&alias).cloned() else {
-                return Results::with_errors(
-                    AstNode {
-                        inner: n.inner,
-                        meta: Self::meta(&n.meta, ValueType::Unknown),
-                    },
-                    vec![Self::error(&n.meta, format!("unknown type `{alias}`"))],
-                );
-            };
-            number
-        } else {
-            n.inner
-        };
+        let number = n.inner;
         Results::ok(AstNode {
             meta: Self::meta(&n.meta, ValueType::Number(number.symbol.clone())),
             inner: number,
@@ -824,26 +900,32 @@ impl AstTransform for TypeResolver {
         &mut self,
         AstNode { inner, meta }: AstNode<Block<Self::From>, Self::From>,
     ) -> Results<AstNode<Block<Self::To>, Self::To>, Self::Error> {
-        inner
+        let aliases = self.aliases.clone();
+        let result = inner
             .body
             .into_iter()
             .map(|v| self.transform_statement(v))
             .collect::<Results<Vec<_>, _>>()
             .map(|body| {
                 let ty = body
-                    .last()
+                    .iter()
+                    .find(|v| matches!(v.inner, Statement::Return(_)))
+                    .or_else(|| body.last())
                     .map(|v| v.meta.ty.clone())
                     .unwrap_or(ValueType::None);
                 AstNode {
                     inner: Block { body },
                     meta: Self::meta(&meta, ty),
                 }
-            })
+            });
+        self.aliases = aliases;
+        result
     }
 }
 
-fn type_value(ty: &Type<PartialMetadata>) -> ValueType {
+pub fn type_value(ty: &Type<PartialMetadata>) -> ValueType {
     match ty {
+        Type::Named(_) => ValueType::Unknown,
         Type::Node(_) => ValueType::Node,
         Type::Number(number) => ValueType::Number(number.symbol.clone()),
         Type::String(_) => ValueType::String,
