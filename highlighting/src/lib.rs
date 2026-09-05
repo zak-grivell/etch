@@ -74,19 +74,15 @@ pub fn highlight(source: &str) -> Vec<Highlight> {
             result.push(token(cursor..end, kind));
             cursor = end;
         } else {
-            let end = cursor
-                + ch.len_utf8()
-                + source[cursor + ch.len_utf8()..]
-                    .chars()
-                    .next()
-                    .filter(|_| {
-                        matches!(
-                            &source[cursor..cursor + ch.len_utf8()],
-                            "=" | "<" | ">" | "-"
-                        )
-                    })
-                    .filter(|next| matches!(*next, '=' | '>'))
-                    .map_or(0, char::len_utf8);
+            let width = if ["==", "<=", ">=", "<-", "->"]
+                .iter()
+                .any(|operator| rest.starts_with(operator))
+            {
+                2
+            } else {
+                ch.len_utf8()
+            };
+            let end = cursor + width;
             result.push(token(cursor..end, HighlightKind::Operator));
             cursor = end;
         }
@@ -133,4 +129,25 @@ mod tests {
         );
         assert!(tokens.iter().all(|token| token.span.end <= 51));
     }
+}
+
+#[cfg(test)]
+#[test]
+fn recognizes_only_supported_compound_operators() {
+    let source = "<- -> <= >= == =>";
+    let operators: Vec<_> = highlight(source)
+        .into_iter()
+        .map(|token| &source[token.span])
+        .collect();
+    assert_eq!(operators, ["<-", "->", "<=", ">=", "==", "=", ">"]);
+}
+
+#[cfg(test)]
+#[test]
+fn escaped_quotes_remain_inside_one_string_token() {
+    let source = r#""a\"b\\c\n"; next"#;
+    let tokens = highlight(source);
+    assert_eq!(tokens[0].kind, HighlightKind::String);
+    assert_eq!(&source[tokens[0].span.clone()], r#""a\"b\\c\n""#);
+    assert_eq!(&source[tokens.last().unwrap().span.clone()], "next");
 }

@@ -2,7 +2,7 @@
 name = "etch"
 scope = "source.etch"
 file-types = ["etch"]
-grammar = "javascript"
+grammar = "etch"
 roots = ["Cargo.toml"]
 comment-token = "//"
 indent = { tab-width = 4, unit = "    " }

@@ -59,6 +59,9 @@
             (pkgs.writeShellScriptBin "etch" ''
               exec cargo run --bin etch -- "$@"
             '')
+            pkgs.python3
+            pkgs.tree-sitter
+            pkgs.nodejs
             pkgs.alejandra
             pkgs.rust-analyzer
             rustToolchain

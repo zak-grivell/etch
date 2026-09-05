@@ -1,0 +1,81 @@
+==================
+Imports, units, closures and matches
+==================
+from "std/passive.etch" import { Resistor };
+type Reading = { value: Number, label: String? };
+let make = (x: Number) -> { value: () -> x + 1mV };
+let result = match make(x: 2).value() {
+    let n if n > 1 -> n,
+    let n -> 0,
+};
+export let output = { result, nodes: [@, @] };
+output.nodes <- @
+
+---
+
+(source_file
+  (import
+    (string)
+    (object_pattern
+      (pattern_field
+        (identifier))))
+  (type_definition
+    (identifier)
+    (object_type
+      (parameter
+        (identifier)
+        (numeric_type))
+      (parameter
+        (identifier)
+        (optional_type
+          (named_type
+            (identifier))))))
+  (definition
+    (identifier)
+    (lambda
+      (parameter
+        (identifier)
+        (numeric_type))
+      (object
+        (object_field
+          (identifier)
+          (lambda
+            (binary_expression
+              (identifier)
+              (number)))))))
+  (definition
+    (identifier)
+    (match_expression
+      (call
+        (field_access
+          (call
+            (identifier)
+            (argument
+              (identifier)
+              (number)))
+          (identifier)))
+      (match_arm
+        (identifier)
+        (binary_expression
+          (identifier)
+          (number))
+        (identifier))
+      (match_arm
+        (identifier)
+        (number))))
+  (export
+    (definition
+      (identifier)
+      (object
+        (object_field
+          (identifier))
+        (object_field
+          (identifier)
+          (array
+            (node)
+            (node))))))
+  (binary_expression
+    (field_access
+      (identifier)
+      (identifier))
+    (node)))

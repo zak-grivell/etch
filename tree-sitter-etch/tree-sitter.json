@@ -1,0 +1,24 @@
+{
+  "grammars": [
+    {
+      "name": "etch",
+      "camelcase": "Etch",
+      "scope": "source.etch",
+      "path": ".",
+      "file-types": [
+        "etch"
+      ],
+      "highlights": "queries/highlights.scm"
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Etch circuit language grammar",
+    "authors": [
+      {
+        "name": "Etch contributors"
+      }
+    ]
+  }
+}
