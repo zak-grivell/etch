@@ -18,9 +18,14 @@ const TOKEN_TYPES: &[SemanticTokenType] = &[
     SemanticTokenType::OPERATOR,
 ];
 
+struct Document {
+    text: String,
+    version: i32,
+}
+
 struct Backend {
     client: Client,
-    documents: Arc<RwLock<HashMap<Url, String>>>,
+    documents: Arc<RwLock<HashMap<Url, Document>>>,
 }
 
 #[tower_lsp::async_trait]
@@ -68,19 +73,28 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        self.update(params.text_document.uri, params.text_document.text)
-            .await;
+        self.update(
+            params.text_document.uri,
+            params.text_document.text,
+            params.text_document.version,
+            true,
+        )
+        .await;
     }
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         if let Some(change) = params.content_changes.into_iter().last() {
-            self.update(params.text_document.uri, change.text).await;
+            self.update(
+                params.text_document.uri,
+                change.text,
+                params.text_document.version,
+                false,
+            )
+            .await;
         }
     }
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        self.documents
-            .write()
-            .await
-            .remove(&params.text_document.uri);
+        let mut documents = self.documents.write().await;
+        documents.remove(&params.text_document.uri);
         self.client
             .publish_diagnostics(params.text_document.uri, vec![], None)
             .await;
@@ -91,34 +105,13 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let documents = self.documents.read().await;
-        let Some(source) = documents.get(&params.text_document.uri) else {
+        let Some(source) = documents
+            .get(&params.text_document.uri)
+            .map(|document| &document.text)
+        else {
             return Ok(None);
         };
-        let mut previous = Position::new(0, 0);
-        let data = highlight(source)
-            .into_iter()
-            .filter_map(|item| {
-                let start = position(source, item.span.start);
-                let end = position(source, item.span.end);
-                if start.line != end.line {
-                    return None;
-                }
-                let delta_line = start.line - previous.line;
-                let delta_start = if delta_line == 0 {
-                    start.character - previous.character
-                } else {
-                    start.character
-                };
-                previous = start;
-                Some(SemanticToken {
-                    delta_line,
-                    delta_start,
-                    length: end.character - start.character,
-                    token_type: kind_index(item.kind),
-                    token_modifiers_bitset: 0,
-                })
-            })
-            .collect();
+        let data = semantic_tokens(source);
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data,
@@ -127,7 +120,10 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let documents = self.documents.read().await;
-        let Some(source) = documents.get(&params.text_document_position.text_document.uri) else {
+        let Some(source) = documents
+            .get(&params.text_document_position.text_document.uri)
+            .map(|document| &document.text)
+        else {
             return Ok(None);
         };
         Ok(Some(CompletionResponse::Array(completions(source))))
@@ -136,7 +132,10 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let documents = self.documents.read().await;
         let position_params = params.text_document_position_params;
-        let Some(source) = documents.get(&position_params.text_document.uri) else {
+        let Some(source) = documents
+            .get(&position_params.text_document.uri)
+            .map(|document| &document.text)
+        else {
             return Ok(None);
         };
         let Some(byte) = byte_offset(source, position_params.position) else {
@@ -144,7 +143,7 @@ impl LanguageServer for Backend {
         };
         let Some(token) = highlight(source)
             .into_iter()
-            .find(|token| token.span.start <= byte && byte <= token.span.end)
+            .find(|token| token.span.start <= byte && byte < token.span.end)
         else {
             return Ok(None);
         };
@@ -166,7 +165,17 @@ impl LanguageServer for Backend {
 }
 
 impl Backend {
-    async fn update(&self, uri: Url, source: String) {
+    async fn update(&self, uri: Url, source: String, version: i32, opening: bool) {
+        let mut documents = self.documents.write().await;
+        if !opening && !documents.contains_key(&uri) {
+            return;
+        }
+        if documents
+            .get(&uri)
+            .is_some_and(|document| document.version >= version)
+        {
+            return;
+        }
         let diagnostics = parser::compile(&source)
             .err()
             .unwrap_or_default()
@@ -185,11 +194,46 @@ impl Backend {
                 }
             })
             .collect();
-        self.documents.write().await.insert(uri.clone(), source);
+        documents.insert(
+            uri.clone(),
+            Document {
+                text: source,
+                version,
+            },
+        );
         self.client
-            .publish_diagnostics(uri, diagnostics, None)
+            .publish_diagnostics(uri, diagnostics, Some(version))
             .await;
     }
+}
+
+fn semantic_tokens(source: &str) -> Vec<SemanticToken> {
+    let mut previous = Position::new(0, 0);
+    let mut data = Vec::new();
+    for item in highlight(source) {
+        let mut byte = item.span.start;
+        for part in source[item.span].split_inclusive('\n') {
+            let text = part.trim_end_matches(['\r', '\n']);
+            if !text.is_empty() {
+                let start = position(source, byte);
+                let delta_line = start.line - previous.line;
+                data.push(SemanticToken {
+                    delta_line,
+                    delta_start: if delta_line == 0 {
+                        start.character - previous.character
+                    } else {
+                        start.character
+                    },
+                    length: text.encode_utf16().count() as u32,
+                    token_type: kind_index(item.kind),
+                    token_modifiers_bitset: 0,
+                });
+                previous = start;
+            }
+            byte += part.len();
+        }
+    }
+    data
 }
 
 fn position(source: &str, byte: usize) -> Position {
@@ -298,14 +342,29 @@ fn byte_offset(source: &str, target: Position) -> Option<usize> {
     let line = source[line_start..]
         .split_once('\n')
         .map_or(&source[line_start..], |(line, _)| line);
+    let line = line.strip_suffix('\r').unwrap_or(line);
     let mut utf16 = 0u32;
     for (offset, ch) in line.char_indices() {
-        if utf16 >= target.character {
+        if utf16 > target.character {
+            return None;
+        }
+        if utf16 == target.character {
             return Some(line_start + offset);
         }
         utf16 += ch.len_utf16() as u32;
     }
     (utf16 == target.character).then_some(line_start + line.len())
+}
+
+#[tokio::main]
+async fn main() {
+    let stdin = tokio::io::stdin();
+    let stdout = tokio::io::stdout();
+    let (service, socket) = LspService::new(|client| Backend {
+        client,
+        documents: Arc::default(),
+    });
+    Server::new(stdin, stdout, socket).serve(service).await;
 }
 
 #[cfg(test)]
@@ -326,13 +385,56 @@ mod tests {
     }
 }
 
-#[tokio::main]
-async fn main() {
-    let stdin = tokio::io::stdin();
-    let stdout = tokio::io::stdout();
-    let (service, socket) = LspService::new(|client| Backend {
-        client,
-        documents: Arc::default(),
-    });
-    Server::new(stdin, stdout, socket).serve(service).await;
+#[cfg(test)]
+mod regression_tests {
+    use super::*;
+    #[test]
+    fn preserves_multiline_string_highlights() {
+        let tokens = semantic_tokens("\"one\ntwo\"");
+        assert_eq!(tokens.len(), 2);
+        assert_eq!(tokens[1].delta_line, 1);
+        assert_eq!(tokens[1].length, 4);
+    }
+    #[test]
+    fn rejects_positions_inside_surrogate_pairs() {
+        assert_eq!(byte_offset("🔌value", Position::new(0, 1)), None);
+        assert_eq!(byte_offset("a\r\nb", Position::new(0, 2)), None);
+    }
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+    #[tokio::test]
+    async fn stale_changes_cannot_overwrite_or_reopen_a_document() {
+        let documents = Arc::new(RwLock::new(HashMap::new()));
+        let mut saved_client = None;
+        let (_service, _socket) = LspService::new(|client| {
+            saved_client = Some(client.clone());
+            Backend {
+                client,
+                documents: documents.clone(),
+            }
+        });
+        let backend = Backend {
+            client: saved_client.unwrap(),
+            documents: documents.clone(),
+        };
+        let uri = Url::parse("file:///ordering.etch").unwrap();
+        backend.update(uri.clone(), "1".into(), 1, true).await;
+        backend.update(uri.clone(), "3".into(), 3, false).await;
+        backend.update(uri.clone(), "2".into(), 2, false).await;
+        {
+            let docs = documents.read().await;
+            assert_eq!(docs[&uri].text, "3");
+            assert_eq!(docs[&uri].version, 3);
+        }
+        backend
+            .did_close(DidCloseTextDocumentParams {
+                text_document: TextDocumentIdentifier { uri: uri.clone() },
+            })
+            .await;
+        backend.update(uri.clone(), "late".into(), 4, false).await;
+        assert!(!documents.read().await.contains_key(&uri));
+    }
 }
